@@ -1,1 +1,38 @@
-<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Результат — ЦППС</title><style>body{margin:0;padding:24px;background:#0b1018;color:#eef2f7;font:16px/1.5 Arial}.wrap{max-width:760px;margin:40px auto;background:#151d29;border:1px solid #303b4c;border-radius:16px;padding:26px}h1,h2{color:#eab447}.row{padding:12px 0;border-bottom:1px solid #303b4c}.label{color:#a7b0bf}.passed{color:#45d483;font-weight:bold}.failed{color:#ff7373;font-weight:bold}a{color:#eab447}</style></head><body><main class="wrap"><p>ЦППС • РЕЗУЛЬТАТ ЭКЗАМЕНА</p><h1>{{ attempt.title }}</h1><div class="row"><span class="label">Курсант:</span> <b>{{ attempt.cadet_full_name or current_user.username }}</b></div><div class="row"><span class="label">Статик:</span> <b>{{ attempt.cadet_static or '—' }}</b></div><div class="row"><span class="label">Экзаменатор:</span> <b>{{ attempt.examiner_full_name or '—' }}</b></div><div class="row"><span class="label">Результат:</span> <b>{{ attempt.score or 0 }} из {{ attempt.total or 0 }}</b>{% if attempt.total %} ({{ ((attempt.score or 0)*100/attempt.total)|round|int }}%){% endif %}</div><div class="row"><span class="label">Статус:</span> {% if attempt.passed %}<span class="passed">ЭКЗАМЕН СДАН</span>{% else %}<span class="failed">ЭКЗАМЕН НЕ СДАН</span>{% endif %}</div><div class="row"><span class="label">Дата завершения:</span> {{ attempt.finished_at or '—' }}</div><p><a href="{{ url_for('dashboard') }}">Вернуться в личный кабинет</a> · <a href="{{ url_for('tests_list') }}">К экзаменам</a>{% if current_user and current_user.role=='admin' %} · <a href="{{ url_for('admin') }}">Админ-панель</a>{% endif %}</p></main>{% if current_user and current_user.role in ['teacher','admin'] %}<script>const presenceUrl={{ url_for('teacher_presence')|tojson }};function pingPresence(){fetch(presenceUrl,{credentials:'same-origin',cache:'no-store'}).catch(()=>{});}pingPresence();setInterval(pingPresence,30000);</script>{% endif %}</body></html>
+{% extends "base.html" %}
+{% block title %}Результат экзамена — ЦППС | ГИБДД{% endblock %}
+{% block content %}
+{% set percent = ((attempt.score or 0) * 100 / attempt.total)|round|int if attempt.total else 0 %}
+<section class="exam-result-shell {{ 'exam-result-pass' if attempt.passed else 'exam-result-fail' }}">
+  <div class="exam-result-masthead">
+    <div class="exam-result-brand"><span class="exam-result-brand-mark">Ц</span><span><b>ЦППС <i>/</i> ГИБДД</b><small>ЦЕНТР ПОДГОТОВКИ И ПРОФЕССИОНАЛЬНОГО СОВЕРШЕНСТВОВАНИЯ</small></span></div>
+    <div class="exam-result-protocol"><small>АТТЕСТАЦИОННЫЙ ПРОТОКОЛ</small><b>№ {{ '%06d'|format(attempt.id) }}</b></div>
+  </div>
+  <div class="exam-result-banner">
+    <div class="exam-result-banner-grid"></div>
+    <div class="exam-result-status-symbol"><svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="28"/><path class="result-symbol-mark" d="{{ 'M18 33 L27 42 L46 22' if attempt.passed else 'M22 22 L42 42 M42 22 L22 42' }}"/></svg></div>
+    <div class="exam-result-eyebrow"><span class="exam-result-live-dot"></span>{{ 'ЭКЗАМЕН ЗАВЕРШЁН УСПЕШНО' if attempt.passed else 'РЕЗУЛЬТАТ АТТЕСТАЦИИ' }}</div>
+    <h1>{{ 'ЗАЧЁТ' if attempt.passed else 'НЕ ЗАЧЁТ' }}</h1>
+    <p class="exam-result-lead">{{ 'Поздравляем с успешной сдачей! Твои знания соответствуют установленному порогу.' if attempt.passed else 'В этот раз порог сдачи не достигнут. Используй результат, чтобы подготовиться и попробовать снова.' }}</p>
+    <div class="exam-result-scoreline"><div class="exam-result-score"><strong>{{ attempt.score or 0 }}</strong><span>/ {{ attempt.total or 0 }}</span></div><div class="exam-result-score-caption"><b>НАБРАНО БАЛЛОВ</b><small>{{ percent }}% правильных ответов</small></div></div>
+    <div class="exam-result-meter"><span style="width:{{ percent }}%"></span><i style="left:{{ attempt.pass_percent or 0 }}%"></i></div>
+    <div class="exam-result-meter-labels"><span>0%</span><span>Порог сдачи: {{ attempt.pass_percent or 0 }}%</span><span>100%</span></div>
+    <div class="exam-result-stamp">{{ 'АТТЕСТАЦИЯ ПРОЙДЕНА' if attempt.passed else 'ТРЕБУЕТСЯ ПОДГОТОВКА' }}</div>
+  </div>
+  <div class="exam-result-section-title"><span>01</span><div><small>ОФИЦИАЛЬНАЯ ЗАПИСЬ</small><h2>Результаты экзамена</h2></div><div class="exam-result-title-line"></div></div>
+  <div class="exam-result-info-grid">
+    <article class="exam-result-info-card"><span class="exam-result-info-icon">▤</span><small>НАЗВАНИЕ ЭКЗАМЕНА</small><b>{{ attempt.title }}</b><em>Аттестационный модуль</em></article>
+    <article class="exam-result-info-card"><span class="exam-result-info-icon">◈</span><small>ПОРОГ СДАЧИ</small><b>{{ attempt.pass_percent or 0 }}%</b><em>Минимальный результат</em></article>
+    <article class="exam-result-info-card"><span class="exam-result-info-icon">◷</span><small>ДАТА ЗАВЕРШЕНИЯ</small><b>{{ attempt.finished_at or '—' }}</b><em>Время фиксации результата</em></article>
+  </div>
+  <div class="exam-result-section-title"><span>02</span><div><small>ДАННЫЕ УЧАСТНИКА</small><h2>Информация о курсанте</h2></div><div class="exam-result-title-line"></div></div>
+  <div class="exam-result-record">
+    <div class="exam-result-record-row"><span><i>01</i> Курсант</span><b>{{ attempt.cadet_full_name or current_user.full_name or current_user.username }}</b></div>
+    <div class="exam-result-record-row"><span><i>02</i> Статик персонажа</span><b>{{ attempt.cadet_static or current_user.cadet_static or 'Не указан' }}</b></div>
+    <div class="exam-result-record-row"><span><i>03</i> Экзаменатор</span><b>{{ attempt.examiner_full_name or 'Не назначен' }}</b></div>
+    <div class="exam-result-record-row"><span><i>04</i> Итоговый статус</span><b class="exam-result-final-status">{{ '✓ ЗАЧЁТ ЗАСЧИТАН' if attempt.passed else '× ЗАЧЁТ НЕ ЗАСЧИТАН' }}</b></div>
+  </div>
+  <div class="exam-result-advice"><div class="exam-result-advice-icon">{{ '✓' if attempt.passed else '!' }}</div><div><b>{{ 'Отличная работа, курсант!' if attempt.passed else 'Следующий шаг — подготовка' }}</b><p>{{ 'Результат сохранён в системе ЦППС. Можешь вернуться в личный кабинет и продолжить обучение.' if attempt.passed else 'Повтори лекции и учебные материалы по теме экзамена. Если нужна помощь, напиши преподавателю ЦППС.' }}</p></div></div>
+  <div class="exam-result-actions"><a class="exam-result-primary" href="{{ url_for('dashboard') }}"><span>Вернуться в личный кабинет</span><b>↗</b></a><a class="exam-result-secondary" href="{{ url_for('tests_list') }}">К списку экзаменов <span>→</span></a>{% if current_user and current_user.role=='admin' %}<a class="exam-result-secondary" href="{{ url_for('admin') }}">Админ-панель <span>→</span></a>{% endif %}</div>
+  <div class="exam-result-bottomline"><span>ЦППС · ГИБДД</span><span>ЭЛЕКТРОННЫЙ ПРОТОКОЛ · № {{ attempt.id }}</span><span>СИСТЕМА ОБУЧЕНИЯ И АТТЕСТАЦИИ</span></div>
+</section>
+{% endblock %}
