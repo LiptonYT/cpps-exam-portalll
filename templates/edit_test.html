@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Редактор экзамена — ЦППС</title>
+  <style>
+    :root{--bg:#0b1018;--panel:#151d29;--gold:#eab447;--text:#eef2f7;--muted:#a7b0bf;--line:#303b4c;--red:#f06464}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#1a2b40 0,#0b1018 55%);color:var(--text);font:16px/1.5 Arial,sans-serif;padding:24px}.wrap{max-width:1000px;margin:0 auto}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin-bottom:18px}h1,h2{margin-top:0}h2{color:var(--gold)}label{display:block;margin:12px 0 6px;font-weight:700}input:not([type=checkbox]),textarea,select{width:100%;padding:11px;border-radius:8px;border:1px solid #3a4658;background:#0c121b;color:#fff;font:inherit}textarea{min-height:90px}button,.button{display:inline-block;padding:11px 16px;border:0;border-radius:8px;background:var(--gold);color:#171717;font-weight:800;text-decoration:none;cursor:pointer}button.danger{background:#a93636;color:white}.muted{color:var(--muted)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.flash{padding:12px;margin-bottom:12px;background:#402426;border-radius:8px}.question{border-top:1px solid var(--line);padding:15px 0}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}@media(max-width:650px){body{padding:12px}.grid{grid-template-columns:1fr}.panel{padding:15px}}
+  </style>
+</head>
+<body><main class="wrap">
+  <p class="muted">ЦППС • АДМИНИСТРАТИВНАЯ ПАНЕЛЬ</p>
+  <h1>Редактор экзамена</h1>
+  <p><a class="button" href="{{ url_for('admin') }}">← Назад в админ-панель</a></p>
+  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="flash">{{ message }}</div>{% endfor %}{% endwith %}
+
+  <section class="panel">
+    <h2>⚙️ Настройки экзамена</h2>
+    <form method="post" action="{{ url_for('test_settings', test_id=test.id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <label>Название экзамена</label><input name="title" value="{{ test.title }}" required maxlength="160">
+      <label>Описание</label><textarea name="description">{{ test.description or '' }}</textarea>
+      <div class="grid"><div><label>Время (минуты)</label><input type="number" name="duration" value="{{ test.duration_minutes }}" min="1" max="180" required></div><div><label>Проходной процент</label><input type="number" name="pass_percent" value="{{ test.pass_percent }}" min="1" max="100" required></div><div><label>Максимум попыток</label><input type="number" name="max_attempts" value="{{ test.max_attempts }}" min="1" max="20" required></div><div><label><input type="checkbox" name="published" {% if test.published %}checked{% endif %}> Опубликован</label></div></div>
+      <button type="submit">Сохранить настройки</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>➕ Добавить вопрос</h2>
+    <form method="post" action="{{ url_for('edit_test', test_id=test.id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <label>Текст вопроса</label><textarea name="prompt" required maxlength="2000" placeholder="Введите вопрос"></textarea>
+      <div class="grid"><div><label>Вариант A</label><input name="a" required maxlength="500"></div><div><label>Вариант B</label><input name="b" required maxlength="500"></div><div><label>Вариант C</label><input name="c" required maxlength="500"></div><div><label>Вариант D</label><input name="d" required maxlength="500"></div></div>
+      <label>Тип вопроса</label>
+      <select name="question_type" id="question_type">
+        <option value="single">Один правильный ответ</option>
+        <option value="multiple">Несколько правильных ответов</option>
+      </select>
+      <div id="single-correct">
+        <label>Правильный ответ</label><select name="correct" id="correct"><option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="D">D</option></select>
+      </div>
+      <div id="multiple-correct" hidden>
+        <label>Отметь все правильные варианты (минимум два)</label>
+        <div class="grid">
+          <label><input type="checkbox" name="correct_answers" value="A"> A</label>
+          <label><input type="checkbox" name="correct_answers" value="B"> B</label>
+          <label><input type="checkbox" name="correct_answers" value="C"> C</label>
+          <label><input type="checkbox" name="correct_answers" value="D"> D</label>
+        </div>
+      </div>
+      <script>
+      (() => {
+        const type = document.getElementById('question_type');
+        const single = document.getElementById('single-correct');
+        const multiple = document.getElementById('multiple-correct');
+        function update() {
+          single.hidden = type.value !== 'single';
+          multiple.hidden = type.value !== 'multiple';
+        }
+        type.addEventListener('change', update); update();
+      })();
+      </script>
+      <p><button type="submit">Добавить вопрос</button></p>
+    </form>
+  </section>
+
+  <section class="panel"><h2>📋 Вопросы экзамена ({{ questions|length }})</h2>
+    {% for q in questions %}<div class="question"><strong>{{ loop.index }}. {{ q.prompt }}</strong><p class="muted">A. {{ q.a }}<br>B. {{ q.b }}<br>C. {{ q.c }}<br>D. {{ q.d }}<br>
+      {% if q.question_type == 'multiple' %}Правильные ответы: {{ q.correct_answers }}{% else %}Правильный ответ: {{ q.correct }}{% endif %}</p><form method="post" action="{{ url_for('delete_question', question_id=q.id) }}" onsubmit="return confirm('Удалить этот вопрос?')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="danger" type="submit">Удалить вопрос</button></form></div>{% else %}<p class="muted">Вопросов пока нет. Добавь первый выше.</p>{% endfor %}
+  </section>
+</main></body></html>
