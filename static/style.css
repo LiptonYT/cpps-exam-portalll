@@ -60,3 +60,65 @@
 .lecture-publish{display:flex!important;align-items:center;gap:9px}.lecture-publish input{width:auto;accent-color:var(--accent)}
 .lecture-admin-panel table{min-width:650px}.lecture-admin-panel td small{display:block;margin-top:5px;color:var(--muted)}
 @media(max-width:560px){.lecture-card,.lecture-admin-panel{padding:15px}.lecture-card h2,.lecture-admin-panel h2{font-size:22px}.lecture-card-top{align-items:flex-start}}
+
+/* ===== ЦППС / ГИБДД visual refresh ===== */
+:root{--bg:#07101b;--panel:#0d1927;--panel2:#122338;--line:#243b53;--text:#f4f8fc;--muted:#9aadc2;--accent:#168cff;--accent2:#70c4ff;--green:#54d6a2;--red:#ff4659}
+body{background:radial-gradient(ellipse at 50% -20%,#12345a 0,transparent 46%),var(--bg);background-attachment:fixed}
+.topline{height:5px;background:linear-gradient(90deg,#e72c43 0 32%,#f3f7fb 32% 34%,#168cff 34% 66%,#f3f7fb 66% 68%,#e72c43 68% 100%);box-shadow:0 2px 18px #168cff22}
+.nav{background:rgba(5,13,23,.94);backdrop-filter:blur(14px);border-bottom:1px solid #284765;box-shadow:0 8px 30px #0003}
+.brand{letter-spacing:.1em}.brand small{color:#87a7c7;letter-spacing:.13em}
+.badge-logo{background:linear-gradient(145deg,#dceeff,#168cff 68%,#0753a0);color:#061525;clip-path:polygon(10% 0,90% 0,100% 18%,94% 73%,50% 100%,6% 73%,0 18%);box-shadow:inset 0 0 0 2px #ffffff66}
+nav a:hover,.text-link:hover{color:var(--accent2)}
+.btn{background:linear-gradient(135deg,#238fff,#0870d9);border-color:#319cff;color:#fff;box-shadow:0 5px 18px #0875df25}
+.btn:hover{background:linear-gradient(135deg,#59b5ff,#168cff);color:#fff;box-shadow:0 7px 22px #168cff35}
+.btn-ghost{background:#0b1725;color:#e9f4ff;border-color:#34516e;box-shadow:none}
+.btn-ghost:hover{background:#10243a;border-color:#168cff;color:#8dceff}
+.hero{border-bottom-color:#29425b}.hero h1 em,.page-head h1 em,.auth-side h1 em{color:#5bb6ff}
+.eyebrow{color:#6dbdff}.dot{background:#50d8a2;box-shadow:0 0 12px #50d8a244}
+.hero-art{background:radial-gradient(ellipse at 50% 43%,#1c4771 0,#10253b 37%,#08121e 74%);border:1px solid #244a70}
+.art-grid{background-image:linear-gradient(#9acfff0a 1px,transparent 1px),linear-gradient(90deg,#9acfff0a 1px,transparent 1px)}
+.ring{border-color:#4baaff55}.shield{color:#f4faff;text-shadow:0 0 30px #168cff66;border:2px solid #62baff;background:linear-gradient(145deg,#173b60,#081624);filter:drop-shadow(0 12px 24px #0008)}.shield span{color:#65baff}
+.art-caption{color:#c2d8ec}.art-caption b{color:#ff5367}.art-number{color:#eaf5ff}.art-number small{color:#8ca9c4}
+.test-card,.panel{background:linear-gradient(145deg,rgba(17,35,54,.97),rgba(9,20,33,.98));border-color:#28435e;box-shadow:0 10px 28px #00000012;transition:transform .2s,border-color .2s,box-shadow .2s}
+.test-card:hover{transform:translateY(-3px);border-color:#398fd6;box-shadow:0 14px 32px #0003}
+.tag{color:#72c4ff;border-color:#277cc866;background:#168cff12}.tag-green{color:#63dfb0;border-color:#3e8d7066;background:#3bce9510}
+.text-link{color:#6ebeff}.section-head h2,.panel h2{color:#f3f8ff}
+.empty{border-color:#34506a;background:#0d1a29}.empty-icon{color:#64baff}.notice{background:#0d1b2a;border-color:#29445e;border-left-color:#168cff}
+.notice.warning{border-left-color:#ff5367;color:#f0c5ca}
+.page-head{border-bottom-color:#29425b}.auth-stamp{border-color:#2f80bd;color:#72c4ff}
+.stack input:focus,.stack textarea:focus,.stack select:focus{border-color:#168cff;box-shadow:0 0 0 3px #168cff18}
+.stack input,.stack textarea,.stack select,.panel input:not([type=checkbox]),.panel textarea,.panel select,.assign-form input{background:#071321;border-color:#29425b}
+.flash.success{border-color:#2b775a;color:#a6f0d2}.flash.danger{border-color:#a33c4b;color:#ffc1c7}.flash.warning{border-color:#82652c;color:#f4d99b}
+.table-wrap{border-color:#29425b;background:#0d1927}th{color:#a7c0d8;background:#14263a}td,th{border-bottom-color:#263e56}tbody tr:hover{background:#13253a}
+.status.pending{color:#7fc6ff;border-color:#347eb866;background:#168cff10}
+.timer-box{border-color:#347eb8;background:#168cff12}.timer-box strong{color:#73c5ff}
+.q-label{color:#72c4ff}.answer:hover{border-color:#168cff}.answer-letter{color:#72c4ff}
+.score{color:#71c3ff}
+footer{border-top:1px solid #203951;background:#07111d}.footer-inner{color:#829bb4}
+.support-chat-link:hover,.support-chat-link.selected{border-color:#168cff;background:#10253a}
+.support-message.mine{border-color:#286ca6;background:#0d2840}.support-message-meta strong{color:#7dc7ff}
+.lecture-view-state.pending{color:#7fc6ff;border-color:#347eb866;background:#168cff10}
+.lecture-create-form input:not([type=checkbox]),.lecture-create-form textarea,.lecture-create-form select{background:#071321;border-color:#29425b}
+/* Lightbar-inspired accent stripe, without distracting animation */
+.hero-art:before{content:"";position:absolute;top:0;left:0;right:0;height:4px;background:linear-gradient(90deg,#f13b50 0 38%,#e9f5ff 38% 50%,#168cff 50% 100%);opacity:.95}
+@media(max-width:800px){.nav{gap:14px}.brand small{font-size:8px}}
+@media(max-width:560px){.hero-art{min-height:320px}.shield{font-size:54px;padding:29px 20px}.hero h1{font-size:48px}}
+
+
+/* GIBDD V2 — cache-busted, unmistakable blue service interface */
+:root{--bg:#050d18;--panel:#0a192a;--panel2:#102944;--line:#234a70;--accent:#168cff;--accent2:#8bd0ff}
+body{background-color:#050d18;background-image:radial-gradient(ellipse at 50% 0%,#123b63 0,transparent 52%),linear-gradient(180deg,#050d18 0%,#081321 100%)}
+.topline{height:6px;background:linear-gradient(90deg,#e5233d 0 33%,#f7fbff 33% 35%,#168cff 35% 65%,#f7fbff 65% 67%,#e5233d 67% 100%)}
+.nav{border-bottom:1px solid #315b80;background:#06111ff2}
+.badge-logo{outline:2px solid #65baff;outline-offset:3px}
+.hero{gap:28px;padding-bottom:28px}
+.hero-copy{padding-left:28px;position:relative}
+.hero-copy:before{content:"ЦЕНТР ПОДГОТОВКИ ЛИЧНОГО СОСТАВА";font-size:9px;letter-spacing:.2em;color:#80b9e9;border-left:3px solid #e5233d;padding-left:10px;margin-bottom:4px}
+.hero-art{border:1px solid #32618b;box-shadow:inset 0 0 55px #167fe51a,0 20px 60px #0004}
+.shield{border-color:#7ac5ff;box-shadow:0 0 0 8px #168cff12,0 0 50px #168cff24}
+.test-card,.panel{border-radius:2px;border-top:2px solid #267fcb;box-shadow:0 12px 30px #0002}
+.test-card:hover{border-color:#168cff;transform:translateY(-3px);transition:transform .18s,border-color .18s}
+.page-head{border-bottom:2px solid #234a70;background:linear-gradient(90deg,#0b1c2eaa,transparent);padding-left:20px}
+.notice{border-left-color:#168cff;background:#0b1c2e}
+.btn{border-radius:2px;text-transform:uppercase;letter-spacing:.06em}
+@media(max-width:850px){.hero-copy{padding-left:0}.hero{gap:0}}
