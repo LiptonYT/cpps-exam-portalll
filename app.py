@@ -1,8 +1,10 @@
 import os, sqlite3, secrets, json
+from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 from flask import Flask, g, render_template, request, redirect, url_for, session, flash, abort, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("DB_PATH", os.path.join(APP_DIR, "cpps.sqlite3"))
@@ -10,7 +12,9 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                  SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "0") == "1",
-                 MAX_CONTENT_LENGTH=2 * 1024 * 1024)
+                 MAX_CONTENT_LENGTH=int(os.environ.get("MAX_UPLOAD_BYTES", str(512 * 1024 * 1024))))
+VIDEO_UPLOAD_DIR = os.path.join(APP_DIR, "static", "uploads", "lectures")
+ALLOWED_VIDEO_EXTENSIONS = {"mp4", "webm", "ogg", "mov"}
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -79,6 +83,16 @@ def init_db():
       message TEXT NOT NULL, created_at TEXT NOT NULL,
       FOREIGN KEY(chat_id) REFERENCES support_chats(id) ON DELETE CASCADE,
       FOREIGN KEY(sender_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS lessons(
+      id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+      video_url TEXT NOT NULL, course INTEGER NOT NULL CHECK(course IN (1,2)),
+      published INTEGER NOT NULL DEFAULT 1, created_by INTEGER, created_at TEXT NOT NULL,
+      FOREIGN KEY(created_by) REFERENCES users(id));
+    CREATE TABLE IF NOT EXISTS lesson_views(
+      id INTEGER PRIMARY KEY, lesson_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+      viewed_at TEXT NOT NULL, UNIQUE(lesson_id,user_id),
+      FOREIGN KEY(lesson_id) REFERENCES lessons(id) ON DELETE CASCADE,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
     """)
     # Миграция: статусы академии и блокировки аккаунта без потери существующих данных.
     user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
@@ -114,6 +128,33 @@ def init_db():
     conn.close()
 
 init_db()
+
+def lesson_video_kind(url):
+    path = urlparse(url or "").path.lower()
+    return "file" if path.endswith((".mp4", ".webm", ".ogg", ".mov")) else "embed"
+
+def lesson_embed_url(url):
+    parsed = urlparse(url or "")
+    host = (parsed.netloc or "").lower().split(":")[0]
+    if host in ("youtu.be", "www.youtu.be"):
+        video_id = parsed.path.strip("/").split("/")[0]
+        return "https://www.youtube.com/embed/" + video_id if video_id else url
+    if host.endswith("youtube.com"):
+        if parsed.path == "/watch":
+            video_id = parse_qs(parsed.query).get("v", [""])[0]
+            return "https://www.youtube.com/embed/" + video_id if video_id else url
+        if parsed.path.startswith(("/shorts/", "/live/")):
+            video_id = parsed.path.split("/")[2] if len(parsed.path.split("/")) > 2 else ""
+            return "https://www.youtube.com/embed/" + video_id if video_id else url
+        if parsed.path.startswith("/embed/"):
+            return url
+    if host.endswith("vimeo.com") and host != "player.vimeo.com":
+        video_id = parsed.path.strip("/").split("/")[0]
+        return "https://player.vimeo.com/video/" + video_id if video_id.isdigit() else url
+    return url
+
+app.jinja_env.globals["lesson_video_kind"] = lesson_video_kind
+app.jinja_env.globals["lesson_embed_url"] = lesson_embed_url
 
 def csrf_token():
     if "_csrf" not in session:
@@ -477,6 +518,126 @@ def admin_support_chat(chat_id):
         FROM support_chats c JOIN users u ON u.id=c.user_id
         WHERE c.status='open' ORDER BY c.updated_at DESC""").fetchall()
     return render_template("support_admin.html", chats=chats, chat=chat, messages=messages)
+
+@app.route("/lectures")
+@login_required
+def lectures():
+    conn = db()
+    user = current_user()
+    course_filter = request.args.get("course", "all")
+    if course_filter not in ("all", "1", "2"):
+        course_filter = "all"
+    where = "WHERE l.published=1"
+    params = []
+    if course_filter in ("1", "2"):
+        where += " AND l.course=?"
+        params.append(int(course_filter))
+    lessons = conn.execute(f"""SELECT l.*,
+        (SELECT viewed_at FROM lesson_views lv WHERE lv.lesson_id=l.id AND lv.user_id=?) AS viewed_at,
+        (SELECT COUNT(*) FROM lesson_views lv WHERE lv.lesson_id=l.id) AS viewed_count
+        FROM lessons l {where} ORDER BY l.course,l.id DESC""", [user["id"], *params]).fetchall()
+    viewers = []
+    if user["role"] == "admin":
+        viewers = conn.execute("""SELECT lv.lesson_id,l.title,l.course,u.username,lv.viewed_at
+            FROM lesson_views lv JOIN lessons l ON l.id=lv.lesson_id
+            JOIN users u ON u.id=lv.user_id ORDER BY l.course,l.id DESC,lv.viewed_at DESC""").fetchall()
+        all_lessons = conn.execute("""SELECT l.*,
+            (SELECT COUNT(*) FROM lesson_views lv WHERE lv.lesson_id=l.id) AS viewed_count
+            FROM lessons l ORDER BY l.course,l.id DESC""").fetchall()
+    else:
+        all_lessons = []
+    return render_template("lectures.html", lessons=lessons, course_filter=course_filter,
+                           all_lessons=all_lessons, viewers=viewers)
+
+@app.route("/lectures/<int:lesson_id>/viewed", methods=["POST"])
+@login_required
+def mark_lesson_viewed(lesson_id):
+    conn = db()
+    lesson = conn.execute("SELECT id FROM lessons WHERE id=? AND published=1", (lesson_id,)).fetchone()
+    if not lesson:
+        abort(404)
+    user = current_user()
+    conn.execute("""INSERT INTO lesson_views(lesson_id,user_id,viewed_at) VALUES(?,?,?)
+        ON CONFLICT(lesson_id,user_id) DO UPDATE SET viewed_at=excluded.viewed_at""",
+        (lesson_id, user["id"], now()))
+    conn.commit()
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify({"ok": True, "lesson_id": lesson_id, "message": "Просмотр сохранён"})
+    flash("Урок отмечен как просмотренный. Руководство ЦППС увидит отметку.", "success")
+    return redirect(url_for("lectures", course=request.form.get("course", "all")))
+
+@app.route("/admin/lectures/new", methods=["POST"])
+@admin_required
+def create_lesson():
+    title = request.form.get("title", "").strip()
+    description = request.form.get("description", "").strip()
+    video_url = request.form.get("video_url", "").strip()
+    uploaded = request.files.get("video_file")
+    course = safe_int(request.form.get("course"), 1, 1, 2)
+
+    has_file = bool(uploaded and uploaded.filename and uploaded.filename.strip())
+    has_url = bool(video_url)
+    if not title:
+        flash("Укажите название урока.", "danger")
+        return redirect(url_for("lectures"))
+    if has_file == has_url:
+        flash("Выберите видеофайл с компьютера ИЛИ укажите ссылку на видео — что-то одно.", "danger")
+        return redirect(url_for("lectures"))
+
+    if has_file:
+        original_name = secure_filename(uploaded.filename)
+        extension = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
+        if extension not in ALLOWED_VIDEO_EXTENSIONS:
+            flash("Формат не поддерживается. Разрешены MP4, WebM, OGG и MOV.", "danger")
+            return redirect(url_for("lectures"))
+        os.makedirs(VIDEO_UPLOAD_DIR, exist_ok=True)
+        saved_name = secrets.token_hex(16) + "." + extension
+        saved_path = os.path.join(VIDEO_UPLOAD_DIR, saved_name)
+        try:
+            uploaded.save(saved_path)
+        except Exception:
+            app.logger.exception("Не удалось сохранить видеоурок")
+            flash("Не удалось сохранить видеофайл. Проверь место на диске и лимит загрузки.", "danger")
+            return redirect(url_for("lectures"))
+        video_url = url_for("static", filename="uploads/lectures/" + saved_name)
+    else:
+        parsed = urlparse(video_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            flash("Укажите корректную ссылку на видео (https:// или http://).", "danger")
+            return redirect(url_for("lectures"))
+
+    conn = db()
+    conn.execute("""INSERT INTO lessons(title,description,video_url,course,published,created_by,created_at)
+        VALUES(?,?,?,?,?,?,?)""", (title, description, video_url, course,
+        1 if request.form.get("published") == "on" else 0, current_user()["id"], now()))
+    conn.commit()
+    flash("Видео-урок добавлен.", "success")
+    return redirect(url_for("lectures"))
+
+@app.route("/admin/lectures/<int:lesson_id>/delete", methods=["POST"])
+@admin_required
+def delete_lesson(lesson_id):
+    conn = db()
+    lesson = conn.execute("SELECT id FROM lessons WHERE id=?", (lesson_id,)).fetchone()
+    if not lesson:
+        abort(404)
+    lesson = conn.execute("SELECT video_url FROM lessons WHERE id=?", (lesson_id,)).fetchone()
+    video_url = lesson["video_url"] if lesson else ""
+    conn.execute("DELETE FROM lesson_views WHERE lesson_id=?", (lesson_id,))
+    conn.execute("DELETE FROM lessons WHERE id=?", (lesson_id,))
+    conn.commit()
+    # Удаляем физический файл только для загруженных локальных видео; внешние ссылки не трогаем.
+    prefix = "/static/uploads/lectures/"
+    if video_url and video_url.startswith(prefix):
+        filename = os.path.basename(video_url)
+        file_path = os.path.join(VIDEO_UPLOAD_DIR, filename)
+        try:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+        except OSError:
+            app.logger.exception("Не удалось удалить файл видеоурока")
+    flash("Видео-урок удалён.", "success")
+    return redirect(url_for("lectures"))
 
 @app.route("/admin")
 @admin_required

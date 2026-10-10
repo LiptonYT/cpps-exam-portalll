@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Лекции и видеоуроки — ЦППС{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">ЦППС / АКАДЕМИЯ</div>
+  <h1>Видео-<em>лекции</em></h1>
+  <p>Смотри учебные материалы своего курса. Когда видео полностью закончится, урок автоматически отметится как просмотренный.</p>
+</div>
+<div class="lecture-filters">
+  <a class="btn {{ 'btn-wide' if course_filter == 'all' else 'btn-ghost' }}" href="{{ url_for('lectures', course='all') }}">Все курсы</a>
+  <a class="btn {{ 'btn-wide' if course_filter == '1' else 'btn-ghost' }}" href="{{ url_for('lectures', course='1') }}">1-й курс</a>
+  <a class="btn {{ 'btn-wide' if course_filter == '2' else 'btn-ghost' }}" href="{{ url_for('lectures', course='2') }}">2-й курс</a>
+</div>
+{% if lessons %}
+<div class="lecture-grid">
+{% for lesson in lessons %}
+<article class="panel lecture-card">
+  <div class="lecture-card-top"><span class="tag">{{ lesson.course }} КУРС</span><span class="lecture-view-state {{ 'done' if lesson.viewed_at else 'pending' }}">{{ '✓ ПРОСМОТРЕНО' if lesson.viewed_at else '○ НЕ ОТМЕЧЕНО' }}</span></div>
+  <h2>{{ lesson.title }}</h2>
+  {% if lesson.description %}<p class="muted lecture-description">{{ lesson.description }}</p>{% endif %}
+  <div class="lecture-video">
+    {% if lesson_video_kind(lesson.video_url) == 'file' %}
+      <video class="lesson-video-player" data-lesson-id="{{ lesson.id }}" controls preload="metadata" src="{{ lesson.video_url }}">Ваш браузер не поддерживает видео.</video>
+    {% else %}
+      <iframe class="lesson-embed-player" data-lesson-id="{{ lesson.id }}" src="{{ lesson_embed_url(lesson.video_url) }}" title="{{ lesson.title }}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+    {% endif %}
+  </div>
+  {% if lesson.viewed_at %}<p class="lecture-viewed-date">Отмечено: {{ lesson.viewed_at }}</p>{% endif %}
+  <form method="post" action="{{ url_for('mark_lesson_viewed', lesson_id=lesson.id) }}" class="lecture-mark-form auto-view-form" data-lesson-id="{{ lesson.id }}" hidden>
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="course" value="{{ course_filter }}">
+  </form>
+  <p class="auto-view-status muted" data-status-for="{{ lesson.id }}">{% if lesson.viewed_at %}Просмотр засчитан{% else %}Отметка появится автоматически после окончания видео{% endif %}</p>
+</article>
+{% endfor %}
+</div>
+{% else %}
+<div class="empty"><h3>Пока нет опубликованных видеоуроков</h3><p>Когда руководство добавит лекции для первого или второго курса, они появятся здесь.</p></div>
+{% endif %}
+
+{% if current_user.role == 'admin' %}
+<section class="panel lecture-admin-panel">
+  <div class="eyebrow">УПРАВЛЕНИЕ МАТЕРИАЛАМИ</div><h2>➕ Добавить видеоурок</h2>
+  <p class="muted">Можно загрузить видео прямо с компьютера (MP4, WebM, OGG, MOV) или добавить ссылку на YouTube/Vimeo. Выбери курс, для которого предназначен урок. Максимальный размер файла зависит от настроек сервера (по умолчанию до 512 МБ).</p>
+  <form method="post" enctype="multipart/form-data" action="{{ url_for('create_lesson') }}" class="lecture-create-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <label>Название урока</label><input name="title" maxlength="180" required placeholder="Например: Устав и обязанности сотрудника">
+    <label>Описание</label><textarea name="description" rows="3" placeholder="Кратко о содержании урока"></textarea>
+    <label>Загрузить видеофайл с компьютера</label><input name="video_file" type="file" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogg,.mov">
+    <label>Или ссылка на видео</label><input name="video_url" type="url" placeholder="https://www.youtube.com/watch?v=...">
+    <p class="muted">Заполни только одно поле: файл или ссылку.</p>
+    <label>Для какого курса</label><select name="course"><option value="1">1-й курс</option><option value="2">2-й курс</option></select>
+    <label class="lecture-publish"><input type="checkbox" name="published" checked> Опубликовать сразу для курсантов</label>
+    <button class="btn" type="submit">Добавить видеоурок</button>
+  </form>
+</section>
+<section class="panel lecture-admin-panel">
+  <h2>📚 Все видеоуроки</h2><p class="muted">Администраторы видят число отметок просмотра. Удаление урока также удалит связанные отметки.</p>
+  <div class="table-wrap"><table><thead><tr><th>Урок</th><th>Курс</th><th>Публикация</th><th>Просмотрели</th><th>Действие</th></tr></thead><tbody>
+  {% for lesson in all_lessons %}<tr><td>{{ lesson.title }}<small>{{ lesson.description or 'Без описания' }}</small></td><td>{{ lesson.course }}-й курс</td><td>{{ 'Опубликован' if lesson.published else 'Черновик' }}</td><td>{{ lesson.viewed_count }}</td><td><form method="post" action="{{ url_for('delete_lesson', lesson_id=lesson.id) }}" onsubmit="return confirm('Удалить этот урок и его отметки просмотра?')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="btn btn-small btn-ghost" type="submit">Удалить</button></form></td></tr>{% else %}<tr><td colspan="5">Видеоуроков пока нет.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+<section class="panel lecture-admin-panel">
+  <h2>👁 Кто просмотрел лекции</h2><p class="muted">Отметки выставляются автоматически, когда видео доходит до конца.</p>
+  <div class="table-wrap"><table><thead><tr><th>Урок</th><th>Курс</th><th>Курсант</th><th>Дата отметки</th></tr></thead><tbody>
+  {% for viewer in viewers %}<tr><td>{{ viewer.title }}</td><td>{{ viewer.course }}-й курс</td><td>{{ viewer.username }}</td><td>{{ viewer.viewed_at }}</td></tr>{% else %}<tr><td colspan="4">Пока нет отметок просмотра.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endif %}
+
+{% if lessons %}
+<script>
+(() => {
+  const marked = new Set();
+  async function markCompleted(lessonId) {
+    if (!lessonId || marked.has(String(lessonId))) return;
+    const form = document.querySelector('.auto-view-form[data-lesson-id="' + lessonId + '"]');
+    if (!form) return;
+    marked.add(String(lessonId));
+    const status = document.querySelector('[data-status-for="' + lessonId + '"]');
+    if (status) status.textContent = 'Сохраняем отметку просмотра…';
+    try {
+      const response = await fetch(form.action, {
+        method: 'POST',
+        body: new FormData(form),
+        credentials: 'same-origin',
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+      });
+      if (!response.ok) throw new Error('Не удалось сохранить отметку');
+      if (status) status.textContent = '✓ Видео просмотрено — отметка сохранена';
+      const state = form.closest('.lecture-card')?.querySelector('.lecture-view-state');
+      if (state) { state.textContent = '✓ ПРОСМОТРЕНО'; state.classList.remove('pending'); state.classList.add('done'); }
+    } catch (error) {
+      marked.delete(String(lessonId));
+      if (status) status.textContent = 'Не удалось сохранить отметку. Обнови страницу и попробуй ещё раз.';
+    }
+  }
+
+  document.querySelectorAll('video.lesson-video-player').forEach(video => {
+    video.addEventListener('ended', () => markCompleted(video.dataset.lessonId));
+  });
+
+  // Подключение событий завершения YouTube-плееров.
+  const youtubeFrames = [...document.querySelectorAll('iframe.lesson-embed-player')].filter(frame => /youtube\.com\/embed\//i.test(frame.src));
+  if (youtubeFrames.length) {
+    youtubeFrames.forEach(frame => {
+      try {
+        const url = new URL(frame.src, window.location.href);
+        url.searchParams.set('enablejsapi', '1');
+        url.searchParams.set('origin', window.location.origin);
+        frame.src = url.toString();
+      } catch (_) {}
+    });
+    window.onYouTubeIframeAPIReady = function () {
+      youtubeFrames.forEach(frame => {
+        try {
+          new YT.Player(frame, { events: { onStateChange: event => {
+            if (event.data === YT.PlayerState.ENDED) markCompleted(frame.dataset.lessonId);
+          }}});
+        } catch (_) {}
+      });
+    };
+    const ytScript = document.createElement('script');
+    ytScript.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(ytScript);
+  }
+
+  // Подключение событий завершения Vimeo-плееров.
+  const vimeoFrames = [...document.querySelectorAll('iframe.lesson-embed-player')].filter(frame => /player\.vimeo\.com\/video\//i.test(frame.src));
+  if (vimeoFrames.length) {
+    vimeoFrames.forEach(frame => {
+      try { const url = new URL(frame.src, window.location.href); url.searchParams.set('api', '1'); frame.src = url.toString(); } catch (_) {}
+    });
+    const vimeoScript = document.createElement('script');
+    vimeoScript.src = 'https://player.vimeo.com/api/player.js';
+    vimeoScript.onload = () => vimeoFrames.forEach(frame => {
+      try { new Vimeo.Player(frame).on('ended', () => markCompleted(frame.dataset.lessonId)); } catch (_) {}
+    });
+    document.head.appendChild(vimeoScript);
+  }
+})();
+</script>
+{% endif %}
+
+{% endblock %}
