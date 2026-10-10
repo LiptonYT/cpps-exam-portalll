@@ -35,7 +35,8 @@ def init_db():
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS users(
       id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'cadet', created_at TEXT NOT NULL);
+      role TEXT NOT NULL DEFAULT 'cadet', created_at TEXT NOT NULL,
+      academy_passed INTEGER NOT NULL DEFAULT 0, access_blocked INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS tests(
       id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT DEFAULT '',
       duration_minutes INTEGER NOT NULL DEFAULT 20, pass_percent INTEGER NOT NULL DEFAULT 70,
@@ -79,6 +80,13 @@ def init_db():
       FOREIGN KEY(chat_id) REFERENCES support_chats(id) ON DELETE CASCADE,
       FOREIGN KEY(sender_id) REFERENCES users(id) ON DELETE CASCADE);
     """)
+    # Миграция: статусы академии и блокировки аккаунта без потери существующих данных.
+    user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "academy_passed" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN academy_passed INTEGER NOT NULL DEFAULT 0")
+    if "access_blocked" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN access_blocked INTEGER NOT NULL DEFAULT 0")
+
     # Миграция: тип мероприятия добавляется без удаления существующих экзаменов.
     test_columns = {row[1] for row in conn.execute("PRAGMA table_info(tests)").fetchall()}
     if "event_type" not in test_columns:
@@ -114,6 +122,19 @@ def csrf_token():
 app.jinja_env.globals["csrf_token"] = csrf_token
 
 @app.before_request
+def enforce_account_block():
+    """Завершает сессию, если руководство заблокировало аккаунт."""
+    uid = session.get("user_id")
+    if not uid:
+        return None
+    user = db().execute("SELECT access_blocked FROM users WHERE id=?", (uid,)).fetchone()
+    if not user or user["access_blocked"]:
+        session.clear()
+        flash("Доступ к сайту заблокирован руководством ЦППС. Обратитесь к начальству.", "danger")
+        return redirect(url_for("login"))
+    return None
+
+@app.before_request
 def protect_posts():
     if request.method == "POST":
         token = request.form.get("_csrf", "")
@@ -124,7 +145,7 @@ def current_user():
     uid = session.get("user_id")
     if not uid:
         return None
-    return db().execute("SELECT id,username,role,created_at FROM users WHERE id=?", (uid,)).fetchone()
+    return db().execute("SELECT id,username,role,created_at,academy_passed,access_blocked FROM users WHERE id=?", (uid,)).fetchone()
 
 @app.context_processor
 def inject_user():
@@ -190,6 +211,9 @@ def login():
         password = request.form.get("password","")
         user = db().execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
         if user and check_password_hash(user["password_hash"], password):
+            if user["access_blocked"]:
+                flash("Доступ к сайту заблокирован руководством ЦППС. Обратитесь к начальству.", "danger")
+                return render_template("auth.html", mode="login")
             session.clear()
             session["user_id"] = user["id"]
             csrf_token()
@@ -410,8 +434,8 @@ def admin_support():
     chats = db().execute("""SELECT c.*,u.username,
         (SELECT message FROM support_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) last_message,
         (SELECT COUNT(*) FROM support_messages m WHERE m.chat_id=c.id) message_count
-        FROM support_chats c JOIN users u ON u.id=c.user_id ORDER BY
-        CASE c.status WHEN 'open' THEN 0 ELSE 1 END, c.updated_at DESC""").fetchall()
+        FROM support_chats c JOIN users u ON u.id=c.user_id
+        WHERE c.status='open' ORDER BY c.updated_at DESC""").fetchall()
     return render_template("support_admin.html", chats=chats, chat=None, messages=[])
 
 @app.route("/admin/support/<int:chat_id>", methods=["GET", "POST"])
@@ -429,7 +453,9 @@ def admin_support_chat(chat_id):
             if status in ("open", "closed"):
                 conn.execute("UPDATE support_chats SET status=?,updated_at=? WHERE id=?", (status, now(), chat_id))
                 conn.commit()
-                flash("Статус обращения обновлён.", "success")
+                flash("Обращение закрыто и убрано из списка поддержки." if status == "closed" else "Обращение открыто.", "success")
+                if status == "closed":
+                    return redirect(url_for("admin_support"))
                 return redirect(url_for("admin_support_chat", chat_id=chat_id))
         else:
             message = request.form.get("message", "").strip()
@@ -448,8 +474,8 @@ def admin_support_chat(chat_id):
     chats = conn.execute("""SELECT c.*,u.username,
         (SELECT message FROM support_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) last_message,
         (SELECT COUNT(*) FROM support_messages m WHERE m.chat_id=c.id) message_count
-        FROM support_chats c JOIN users u ON u.id=c.user_id ORDER BY
-        CASE c.status WHEN 'open' THEN 0 ELSE 1 END, c.updated_at DESC""").fetchall()
+        FROM support_chats c JOIN users u ON u.id=c.user_id
+        WHERE c.status='open' ORDER BY c.updated_at DESC""").fetchall()
     return render_template("support_admin.html", chats=chats, chat=chat, messages=messages)
 
 @app.route("/admin")
@@ -464,7 +490,7 @@ def admin():
     }
     tests = conn.execute("""SELECT t.*,(SELECT COUNT(*) FROM questions q WHERE q.test_id=t.id) qcount
         FROM tests t ORDER BY t.id DESC""").fetchall()
-    users = conn.execute("SELECT id,username,role,created_at FROM users ORDER BY id DESC").fetchall()
+    users = conn.execute("SELECT id,username,role,created_at,academy_passed,access_blocked FROM users ORDER BY id DESC").fetchall()
     attempts = conn.execute("""SELECT a.*,u.username,t.title FROM attempts a
         JOIN users u ON u.id=a.user_id JOIN tests t ON t.id=a.test_id
         WHERE a.finished_at IS NOT NULL ORDER BY a.id DESC LIMIT 500""").fetchall()
@@ -568,6 +594,24 @@ def change_role(user_id):
         db().execute("UPDATE users SET role=? WHERE id=?", (role,user_id))
         db().commit()
         flash("Роль пользователя обновлена.", "success")
+    return redirect(url_for("admin"))
+
+@app.route("/admin/user/<int:user_id>/academy-access", methods=["POST"])
+@admin_required
+def update_user_academy_access(user_id):
+    conn = db()
+    target = conn.execute("SELECT id,username,role FROM users WHERE id=?", (user_id,)).fetchone()
+    if not target:
+        abort(404)
+    if target["id"] == current_user()["id"] or target["role"] == "admin":
+        flash("Нельзя менять статусы своего аккаунта или аккаунта администратора.", "warning")
+        return redirect(url_for("admin"))
+    academy_passed = 1 if request.form.get("academy_passed") == "on" else 0
+    access_blocked = 1 if request.form.get("access_blocked") == "on" else 0
+    conn.execute("UPDATE users SET academy_passed=?,access_blocked=? WHERE id=?",
+                 (academy_passed, access_blocked, user_id))
+    conn.commit()
+    flash(f"Статусы аккаунта {target['username']} сохранены.", "success")
     return redirect(url_for("admin"))
 
 @app.route("/admin/internship/new", methods=["POST"])
