@@ -1,7 +1,7 @@
 import os, sqlite3, secrets, json
 from datetime import datetime, timezone, timedelta
 from functools import wraps
-from flask import Flask, g, render_template, request, redirect, url_for, session, flash, abort
+from flask import Flask, g, render_template, request, redirect, url_for, session, flash, abort, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -69,6 +69,15 @@ def init_db():
       UNIQUE(internship_id,user_id),
       FOREIGN KEY(internship_id) REFERENCES internships(id) ON DELETE CASCADE,
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS support_chats(
+      id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS support_messages(
+      id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, sender_id INTEGER NOT NULL,
+      message TEXT NOT NULL, created_at TEXT NOT NULL,
+      FOREIGN KEY(chat_id) REFERENCES support_chats(id) ON DELETE CASCADE,
+      FOREIGN KEY(sender_id) REFERENCES users(id) ON DELETE CASCADE);
     """)
     # Миграция: тип мероприятия добавляется без удаления существующих экзаменов.
     test_columns = {row[1] for row in conn.execute("PRAGMA table_info(tests)").fetchall()}
@@ -319,6 +328,129 @@ def attempt_result(attempt_id):
     if not attempt: abort(404)
     if u["role"] != "admin" and attempt["user_id"] != u["id"]: abort(403)
     return render_template("result.html", attempt=attempt)
+
+@app.route("/support", methods=["GET", "POST"])
+@login_required
+def support():
+    user = current_user()
+    if user["role"] == "admin":
+        return redirect(url_for("admin_support"))
+    conn = db()
+    if request.method == "POST":
+        title = request.form.get("title", "").strip()
+        message = request.form.get("message", "").strip()
+        if not title or not message:
+            flash("Укажите тему обращения и сообщение.", "danger")
+        elif len(title) > 100 or len(message) > 4000:
+            flash("Тема — до 100 символов, сообщение — до 4000 символов.", "danger")
+        else:
+            cur = conn.execute("INSERT INTO support_chats(user_id,title,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                               (user["id"], title, "open", now(), now()))
+            conn.execute("INSERT INTO support_messages(chat_id,sender_id,message,created_at) VALUES(?,?,?,?)",
+                          (cur.lastrowid, user["id"], message, now()))
+            conn.commit()
+            flash("Обращение отправлено начальству ЦППС.", "success")
+            return redirect(url_for("support_chat", chat_id=cur.lastrowid))
+    chats = conn.execute("""SELECT c.*,
+        (SELECT message FROM support_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) last_message,
+        (SELECT COUNT(*) FROM support_messages m WHERE m.chat_id=c.id) message_count
+        FROM support_chats c WHERE c.user_id=? ORDER BY c.updated_at DESC""", (user["id"],)).fetchall()
+    return render_template("support.html", chats=chats, chat=None, messages=[])
+
+@app.route("/support/<int:chat_id>", methods=["GET", "POST"])
+@login_required
+def support_chat(chat_id):
+    user = current_user()
+    if user["role"] == "admin":
+        return redirect(url_for("admin_support_chat", chat_id=chat_id))
+    conn = db()
+    chat = conn.execute("SELECT * FROM support_chats WHERE id=? AND user_id=?", (chat_id, user["id"])).fetchone()
+    if not chat:
+        abort(404)
+    if request.method == "POST":
+        message = request.form.get("message", "").strip()
+        if not message:
+            flash("Введите сообщение.", "danger")
+        elif len(message) > 4000:
+            flash("Сообщение не должно превышать 4000 символов.", "danger")
+        elif chat["status"] == "closed":
+            flash("Обращение закрыто. Создайте новое, если вопрос остался.", "warning")
+        else:
+            conn.execute("INSERT INTO support_messages(chat_id,sender_id,message,created_at) VALUES(?,?,?,?)",
+                         (chat_id, user["id"], message, now()))
+            conn.execute("UPDATE support_chats SET updated_at=? WHERE id=?", (now(), chat_id))
+            conn.commit()
+            return redirect(url_for("support_chat", chat_id=chat_id))
+    messages = conn.execute("""SELECT m.*,u.username,u.role FROM support_messages m
+        JOIN users u ON u.id=m.sender_id WHERE m.chat_id=? ORDER BY m.id""", (chat_id,)).fetchall()
+    chats = conn.execute("SELECT * FROM support_chats WHERE user_id=? ORDER BY updated_at DESC", (user["id"],)).fetchall()
+    return render_template("support.html", chats=chats, chat=chat, messages=messages)
+
+@app.route("/support/api/<int:chat_id>/messages")
+@login_required
+def support_messages_api(chat_id):
+    user = current_user()
+    chat = db().execute("SELECT id,user_id FROM support_chats WHERE id=?", (chat_id,)).fetchone()
+    if not chat:
+        abort(404)
+    if user["role"] != "admin" and chat["user_id"] != user["id"]:
+        abort(403)
+    try:
+        after_id = max(0, int(request.args.get("after", "0")))
+    except (TypeError, ValueError):
+        after_id = 0
+    rows = db().execute("""SELECT m.id,m.sender_id,m.message,m.created_at,u.username,u.role
+        FROM support_messages m JOIN users u ON u.id=m.sender_id
+        WHERE m.chat_id=? AND m.id>? ORDER BY m.id""", (chat_id, after_id)).fetchall()
+    return jsonify([dict(row) for row in rows])
+
+@app.route("/admin/support")
+@admin_required
+def admin_support():
+    chats = db().execute("""SELECT c.*,u.username,
+        (SELECT message FROM support_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) last_message,
+        (SELECT COUNT(*) FROM support_messages m WHERE m.chat_id=c.id) message_count
+        FROM support_chats c JOIN users u ON u.id=c.user_id ORDER BY
+        CASE c.status WHEN 'open' THEN 0 ELSE 1 END, c.updated_at DESC""").fetchall()
+    return render_template("support_admin.html", chats=chats, chat=None, messages=[])
+
+@app.route("/admin/support/<int:chat_id>", methods=["GET", "POST"])
+@admin_required
+def admin_support_chat(chat_id):
+    conn = db()
+    chat = conn.execute("""SELECT c.*,u.username FROM support_chats c
+        JOIN users u ON u.id=c.user_id WHERE c.id=?""", (chat_id,)).fetchone()
+    if not chat:
+        abort(404)
+    if request.method == "POST":
+        action = request.form.get("action", "reply")
+        if action == "status":
+            status = request.form.get("status")
+            if status in ("open", "closed"):
+                conn.execute("UPDATE support_chats SET status=?,updated_at=? WHERE id=?", (status, now(), chat_id))
+                conn.commit()
+                flash("Статус обращения обновлён.", "success")
+                return redirect(url_for("admin_support_chat", chat_id=chat_id))
+        else:
+            message = request.form.get("message", "").strip()
+            if not message:
+                flash("Введите ответ курсанту.", "danger")
+            elif len(message) > 4000:
+                flash("Сообщение не должно превышать 4000 символов.", "danger")
+            else:
+                conn.execute("INSERT INTO support_messages(chat_id,sender_id,message,created_at) VALUES(?,?,?,?)",
+                             (chat_id, current_user()["id"], message, now()))
+                conn.execute("UPDATE support_chats SET status='open',updated_at=? WHERE id=?", (now(), chat_id))
+                conn.commit()
+                return redirect(url_for("admin_support_chat", chat_id=chat_id))
+    messages = conn.execute("""SELECT m.*,u.username,u.role FROM support_messages m
+        JOIN users u ON u.id=m.sender_id WHERE m.chat_id=? ORDER BY m.id""", (chat_id,)).fetchall()
+    chats = conn.execute("""SELECT c.*,u.username,
+        (SELECT message FROM support_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) last_message,
+        (SELECT COUNT(*) FROM support_messages m WHERE m.chat_id=c.id) message_count
+        FROM support_chats c JOIN users u ON u.id=c.user_id ORDER BY
+        CASE c.status WHEN 'open' THEN 0 ELSE 1 END, c.updated_at DESC""").fetchall()
+    return render_template("support_admin.html", chats=chats, chat=chat, messages=messages)
 
 @app.route("/admin")
 @admin_required
