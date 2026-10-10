@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Обращения курсантов | ЦППС{% endblock %}
+{% block content %}
+<div class="page-head"><div class="eyebrow">ПАНЕЛЬ РУКОВОДСТВА / ОБРАТНАЯ СВЯЗЬ</div><h1>Чат с <em>курсантами</em></h1><p>Просматривай обращения, отвечай курсантам и закрывай решённые вопросы.</p></div>
+<div class="support-layout admin-support-layout">
+  <section class="panel support-sidebar"><h2>Все обращения <span class="muted">({{ chats|length }})</span></h2>
+    {% for item in chats %}
+      <a class="support-chat-link {{ 'selected' if chat and chat.id == item.id else '' }}" href="{{ url_for('admin_support_chat', chat_id=item.id) }}">
+        <div class="support-chat-top"><strong>{{ item.title }}</strong><span class="status {{ 'good' if item.status == 'open' else 'pending' }}">{{ 'ОТКРЫТО' if item.status == 'open' else 'ЗАКРЫТО' }}</span></div>
+        <div class="support-cadet-name">Курсант: {{ item.username }}</div><p>{{ item.last_message or 'Сообщений пока нет' }}</p><small>Сообщений: {{ item.message_count }}</small>
+      </a>
+    {% else %}<p class="muted">Новых обращений пока нет.</p>{% endfor %}
+  </section>
+  <section class="panel support-conversation">
+    {% if chat %}
+      <div class="support-heading"><div><div class="eyebrow">ОБРАЩЕНИЕ #{{ chat.id }} · КУРСАНТ {{ chat.username }}</div><h2>{{ chat.title }}</h2></div><span class="status {{ 'good' if chat.status == 'open' else 'pending' }}">{{ 'ОТКРЫТО' if chat.status == 'open' else 'ЗАКРЫТО' }}</span></div>
+      <div class="support-status-controls"><form method="post"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="status"><select name="status"><option value="open" {{ 'selected' if chat.status == 'open' else '' }}>Открыть обращение</option><option value="closed" {{ 'selected' if chat.status == 'closed' else '' }}>Закрыть обращение</option></select><button class="btn btn-small btn-ghost" type="submit">Сохранить статус</button></form></div>
+      <div class="support-messages">
+        {% for message in messages %}
+          <article class="support-message {{ 'mine' if message.sender_id == current_user.id else 'theirs' }}" data-message-id="{{ message.id }}">
+            <div class="support-message-meta"><strong>{{ message.username }}</strong><span>{{ 'Начальство ЦППС' if message.role == 'admin' else 'Курсант' }}</span><time>{{ message.created_at[:16].replace('T',' ') }}</time></div>
+            <p>{{ message.message }}</p>
+          </article>
+        {% endfor %}
+      </div>
+      <form method="post" class="support-reply-form"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><textarea name="message" rows="3" maxlength="4000" placeholder="Ответ курсанту…" required></textarea><button class="btn" type="submit">Отправить ответ →</button></form>
+    {% else %}<div class="support-empty"><div class="empty-icon">✉</div><h2>Обращения курсантов</h2><p>Выбери обращение слева, чтобы прочитать переписку и ответить.</p></div>{% endif %}
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+{% if chat %}<script>
+(function(){
+  const list = document.querySelector('.support-messages');
+  if (!list) return;
+  let lastId = {{ messages[-1].id if messages else 0 }};
+  const endpoint = {{ url_for('support_messages_api', chat_id=chat.id)|tojson }};
+  async function updateMessages(){
+    try {
+      const response = await fetch(endpoint + '?after=' + lastId, {credentials:'same-origin', cache:'no-store'});
+      if (!response.ok) return;
+      const incoming = await response.json();
+      for (const item of incoming) {
+        if (document.querySelector('[data-message-id="' + item.id + '"]')) continue;
+        const article = document.createElement('article');
+        article.className = 'support-message ' + (item.sender_id === {{ current_user.id }} ? 'mine' : 'theirs');
+        article.dataset.messageId = item.id;
+        const meta = document.createElement('div'); meta.className = 'support-message-meta';
+        const name = document.createElement('strong'); name.textContent = item.username;
+        const role = document.createElement('span'); role.textContent = item.role === 'admin' ? 'Начальство ЦППС' : 'Курсант';
+        const time = document.createElement('time'); time.textContent = (item.created_at || '').slice(0,16).replace('T',' ');
+        meta.append(name, role, time);
+        const body = document.createElement('p'); body.textContent = item.message;
+        article.append(meta, body); list.appendChild(article);
+        if (item.id > lastId) lastId = item.id;
+      }
+      if (incoming.length) list.scrollTop = list.scrollHeight;
+    } catch (_) {}
+  }
+  document.querySelectorAll('.support-message').forEach(el => { const id = Number(el.dataset.messageId || 0); if (id > lastId) lastId = id; });
+  updateMessages(); setInterval(updateMessages, 5000);
+})();
+</script>{% endif %}
+{% endblock %}
