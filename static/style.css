@@ -17,3 +17,26 @@
 .presence-label{margin-left:auto;font-size:9px;font-weight:800;white-space:nowrap}
 .presence-label.online{color:var(--green)}.presence-label.offline{color:var(--red)}
 @media(max-width:700px){.teacher-presence{grid-template-columns:1fr}}
+
+/* Support chat */
+.support-layout{display:grid;grid-template-columns:minmax(280px,.78fr) minmax(0,1.5fr);gap:16px;margin:28px 0 50px;align-items:start}
+.support-sidebar,.support-conversation{min-width:0;padding:20px}
+.support-sidebar h2,.support-conversation h2{font:24px Oswald;margin:0 0 14px}
+.support-chat-link{display:block;padding:13px 12px;margin:8px 0;background:#0c1118;border:1px solid var(--line);transition:border-color .2s}
+.support-chat-link:hover,.support-chat-link.selected{border-color:#9a762f;background:#171a1c}
+.support-chat-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.support-chat-top strong{font-size:12px;overflow-wrap:anywhere}
+.support-chat-link p{font-size:11px;color:var(--muted);margin:8px 0;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.support-chat-link small,.support-cadet-name{font-size:10px;color:#8793a2}.support-cadet-name{margin-top:5px}
+.support-new-form{border-top:1px solid var(--line);padding-top:18px;margin-top:20px}.support-new-form h3{font:18px Oswald;margin:0}
+.support-new-form textarea,.support-reply-form textarea{width:100%;resize:vertical;background:#0b1016;border:1px solid #303b49;color:#f5f6f8;padding:12px;font:12px Manrope;border-radius:3px;outline:none}
+.support-new-form textarea:focus,.support-reply-form textarea:focus{border-color:var(--accent)}
+.support-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:15px;border-bottom:1px solid var(--line);padding-bottom:14px}
+.support-heading h2{margin:5px 0 0;overflow-wrap:anywhere}.support-messages{display:flex;flex-direction:column;gap:12px;padding:18px 0;max-height:580px;overflow-y:auto}
+.support-message{max-width:90%;padding:12px 14px;border:1px solid var(--line);background:#0d1219;overflow-wrap:anywhere}
+.support-message.mine{align-self:flex-end;border-color:#78602d;background:#211c12}.support-message.theirs{align-self:flex-start}
+.support-message-meta{display:flex;gap:9px;align-items:center;flex-wrap:wrap;font-size:10px}.support-message-meta strong{color:var(--accent2)}.support-message-meta span,.support-message-meta time{color:var(--muted)}.support-message p{margin:9px 0 0;white-space:pre-wrap;font-size:12px}
+.support-reply-form{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--line);padding-top:16px}.support-reply-form .btn{align-self:flex-end}
+.support-status-controls{display:flex;justify-content:flex-end;padding-top:12px}.support-status-controls form{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.support-status-controls select{background:#0b1016;color:#fff;border:1px solid var(--line);padding:8px}
+.support-empty{min-height:300px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:25px}.support-empty h2{margin:10px 0}.support-empty p{color:var(--muted);font-size:12px;max-width:380px}
+@media(max-width:800px){.support-layout{grid-template-columns:1fr}.support-sidebar{order:1}.support-conversation{order:2}.support-messages{max-height:460px}}
