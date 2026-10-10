@@ -1,4 +1,4 @@
-import os, sqlite3, secrets, json
+import os, sqlite3, secrets, json, re
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -40,7 +40,8 @@ def init_db():
     CREATE TABLE IF NOT EXISTS users(
       id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'cadet', created_at TEXT NOT NULL,
-      academy_passed INTEGER NOT NULL DEFAULT 0, access_blocked INTEGER NOT NULL DEFAULT 0);
+      full_name TEXT NOT NULL DEFAULT '', cadet_static TEXT NOT NULL DEFAULT '',
+      password_set INTEGER NOT NULL DEFAULT 0, academy_passed INTEGER NOT NULL DEFAULT 0, access_blocked INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS tests(
       id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT DEFAULT '',
       duration_minutes INTEGER NOT NULL DEFAULT 20, pass_percent INTEGER NOT NULL DEFAULT 70,
@@ -100,6 +101,12 @@ def init_db():
         conn.execute("ALTER TABLE users ADD COLUMN academy_passed INTEGER NOT NULL DEFAULT 0")
     if "access_blocked" not in user_columns:
         conn.execute("ALTER TABLE users ADD COLUMN access_blocked INTEGER NOT NULL DEFAULT 0")
+    if "full_name" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN full_name TEXT NOT NULL DEFAULT ''")
+    if "cadet_static" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN cadet_static TEXT NOT NULL DEFAULT ''")
+    if "password_set" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN password_set INTEGER NOT NULL DEFAULT 0")
 
     # Миграция: тип мероприятия добавляется без удаления существующих экзаменов.
     test_columns = {row[1] for row in conn.execute("PRAGMA table_info(tests)").fetchall()}
@@ -186,7 +193,7 @@ def current_user():
     uid = session.get("user_id")
     if not uid:
         return None
-    return db().execute("SELECT id,username,role,created_at,academy_passed,access_blocked FROM users WHERE id=?", (uid,)).fetchone()
+    return db().execute("SELECT id,username,role,created_at,full_name,cadet_static,academy_passed,access_blocked FROM users WHERE id=?", (uid,)).fetchone()
 
 @app.context_processor
 def inject_user():
@@ -228,38 +235,69 @@ def index():
 @app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
-        username = request.form.get("username","").strip()
-        password = request.form.get("password","")
-        if len(username) < 3 or len(username) > 32 or not username.replace("_","").replace("-","").isalnum():
-            flash("Никнейм: 3–32 символа, только буквы, цифры, _ или -.", "danger")
+        first_name = request.form.get("first_name", "").strip()
+        last_name = request.form.get("last_name", "").strip()
+        cadet_static = request.form.get("cadet_static", "").strip()
+        password = request.form.get("password", "")
+        full_name = f"{first_name} {last_name}".strip()
+        name_pattern = re.compile(r"^[А-Яа-яЁё][А-Яа-яЁё -]{0,39}$")
+        static_pattern = re.compile(r"^[0-9]{1,10}(?:-[0-9]{1,10})?$")
+        if not name_pattern.fullmatch(first_name) or not name_pattern.fullmatch(last_name):
+            flash("Введите имя и фамилию русскими буквами.", "danger")
+        elif not static_pattern.fullmatch(cadet_static):
+            flash("Введите статик цифрами, например 855-024.", "danger")
         elif len(password) < 8:
             flash("Пароль должен содержать минимум 8 символов.", "danger")
+        elif db().execute("SELECT 1 FROM users WHERE cadet_static=? AND cadet_static!=''", (cadet_static,)).fetchone():
+            flash("Этот статик уже зарегистрирован.", "danger")
         else:
+            internal_username = "cadet_" + cadet_static.replace("-", "_")
             try:
-                db().execute("INSERT INTO users(username,password_hash,role,created_at) VALUES(?,?,?,?)",
-                             (username, generate_password_hash(password), "cadet", now()))
+                db().execute("""INSERT INTO users(username,password_hash,role,created_at,full_name,cadet_static,password_set)
+                    VALUES(?,?,?,?,?,?,1)""",
+                    (internal_username, generate_password_hash(password), "cadet", now(), full_name, cadet_static))
                 db().commit()
-                flash("Аккаунт создан. Теперь войдите.", "success")
+                flash("Регистрация завершена. Теперь войдите по статику и паролю.", "success")
                 return redirect(url_for("login"))
             except sqlite3.IntegrityError:
-                flash("Этот никнейм уже занят.", "danger")
+                flash("Не удалось зарегистрировать этот статик. Проверьте, не зарегистрирован ли он уже.", "danger")
     return render_template("auth.html", mode="register")
 
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username","").strip()
-        password = request.form.get("password","")
-        user = db().execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-        if user and check_password_hash(user["password_hash"], password):
+        cadet_static = request.form.get("cadet_static", "").strip()
+        cadet_password = request.form.get("cadet_password", "")
+        admin_username = request.form.get("admin_username", "").strip()
+        admin_password = request.form.get("admin_password", "")
+        user = None
+        if admin_username and admin_password:
+            user = db().execute("SELECT * FROM users WHERE username=? AND role='admin'", (admin_username,)).fetchone()
+            if not user or not check_password_hash(user["password_hash"], admin_password):
+                user = None
+        elif cadet_static and cadet_password:
+            user = db().execute("SELECT * FROM users WHERE cadet_static=? AND role!='admin'", (cadet_static,)).fetchone()
+            if user:
+                # Старые аккаунты, созданные до добавления пароля, получают пароль при первом входе.
+                if not user["password_set"]:
+                    if len(cadet_password) < 8:
+                        flash("Для первого входа задайте пароль минимум из 8 символов.", "danger")
+                        return render_template("auth.html", mode="login")
+                    db().execute("UPDATE users SET password_hash=?, password_set=1 WHERE id=?",
+                                 (generate_password_hash(cadet_password), user["id"]))
+                    db().commit()
+                    user = db().execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+                elif not check_password_hash(user["password_hash"], cadet_password):
+                    user = None
+        if user:
             if user["access_blocked"]:
-                flash("Доступ к сайту заблокирован руководством ЦППС. Обратитесь к начальству.", "danger")
+                flash("Доступ к сайту заблокирован, так как академия пройдена или доступ закрыт руководством ЦППС. Обратитесь к начальству.", "danger")
                 return render_template("auth.html", mode="login")
             session.clear()
             session["user_id"] = user["id"]
             csrf_token()
-            return redirect(request.args.get("next") if request.args.get("next","").startswith("/") else url_for("dashboard"))
-        flash("Неверный никнейм или пароль.", "danger")
+            return redirect(request.args.get("next") if request.args.get("next", "").startswith("/") else url_for("dashboard"))
+        flash("Проверьте статик и пароль либо данные администратора.", "danger")
     return render_template("auth.html", mode="login")
 
 @app.route("/logout", methods=["POST"])
@@ -651,7 +689,7 @@ def admin():
     }
     tests = conn.execute("""SELECT t.*,(SELECT COUNT(*) FROM questions q WHERE q.test_id=t.id) qcount
         FROM tests t ORDER BY t.id DESC""").fetchall()
-    users = conn.execute("SELECT id,username,role,created_at,academy_passed,access_blocked FROM users ORDER BY id DESC").fetchall()
+    users = conn.execute("SELECT id,username,role,created_at,full_name,cadet_static,academy_passed,access_blocked FROM users ORDER BY id DESC").fetchall()
     attempts = conn.execute("""SELECT a.*,u.username,t.title FROM attempts a
         JOIN users u ON u.id=a.user_id JOIN tests t ON t.id=a.test_id
         WHERE a.finished_at IS NOT NULL ORDER BY a.id DESC LIMIT 500""").fetchall()
@@ -768,7 +806,8 @@ def update_user_academy_access(user_id):
         flash("Нельзя менять статусы своего аккаунта или аккаунта администратора.", "warning")
         return redirect(url_for("admin"))
     academy_passed = 1 if request.form.get("academy_passed") == "on" else 0
-    access_blocked = 1 if request.form.get("access_blocked") == "on" else 0
+    # После отметки «Академия пройдена» доступ блокируется автоматически.
+    access_blocked = 1 if (request.form.get("access_blocked") == "on" or academy_passed) else 0
     conn.execute("UPDATE users SET academy_passed=?,access_blocked=? WHERE id=?",
                  (academy_passed, access_blocked, user_id))
     conn.commit()
