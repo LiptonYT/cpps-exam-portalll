@@ -689,6 +689,16 @@ def mark_lesson_viewed(lesson_id):
 @app.route("/admin/lectures/new", methods=["POST"])
 @admin_required
 def create_lesson():
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+    def upload_response(message, success=False, status=400):
+        # AJAX-загрузка получает JSON, чтобы браузер мог показать результат
+        # без потери flash-сообщения при автоматическом переходе после POST.
+        if is_ajax:
+            return jsonify({"ok": success, "message": message}), (200 if success else status)
+        flash(message, "success" if success else "danger")
+        return redirect(url_for("lectures"))
+
     title = request.form.get("title", "").strip()
     description = request.form.get("description", "").strip()
     video_url = request.form.get("video_url", "").strip()
@@ -698,18 +708,15 @@ def create_lesson():
     has_file = bool(uploaded and uploaded.filename and uploaded.filename.strip())
     has_url = bool(video_url)
     if not title:
-        flash("Укажите название урока.", "danger")
-        return redirect(url_for("lectures"))
+        return upload_response("Укажите название урока.")
     if has_file == has_url:
-        flash("Выберите видеофайл с компьютера ИЛИ укажите ссылку на видео — что-то одно.", "danger")
-        return redirect(url_for("lectures"))
+        return upload_response("Выберите видеофайл с компьютера ИЛИ укажите ссылку на видео — что-то одно.")
 
     if has_file:
         original_name = secure_filename(uploaded.filename)
         extension = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
         if extension not in ALLOWED_VIDEO_EXTENSIONS:
-            flash("Формат не поддерживается. Разрешены MP4, WebM, OGG и MOV.", "danger")
-            return redirect(url_for("lectures"))
+            return upload_response("Формат не поддерживается. Разрешены MP4, WebM, OGG и MOV.")
         os.makedirs(VIDEO_UPLOAD_DIR, exist_ok=True)
         saved_name = secrets.token_hex(16) + "." + extension
         saved_path = os.path.join(VIDEO_UPLOAD_DIR, saved_name)
@@ -717,22 +724,19 @@ def create_lesson():
             uploaded.save(saved_path)
         except Exception:
             app.logger.exception("Не удалось сохранить видеоурок")
-            flash("Не удалось сохранить видеофайл. Проверь место на диске и лимит загрузки.", "danger")
-            return redirect(url_for("lectures"))
+            return upload_response("Не удалось сохранить видеофайл. Проверь место на диске и лимит загрузки.", status=500)
         video_url = url_for("static", filename="uploads/lectures/" + saved_name)
     else:
         parsed = urlparse(video_url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            flash("Укажите корректную ссылку на видео (https:// или http://).", "danger")
-            return redirect(url_for("lectures"))
+            return upload_response("Укажите корректную ссылку на видео (https:// или http://).")
 
     conn = db()
     conn.execute("""INSERT INTO lessons(title,description,video_url,course,published,created_by,created_at)
         VALUES(?,?,?,?,?,?,?)""", (title, description, video_url, course,
         1 if request.form.get("published") == "on" else 0, current_user()["id"], now()))
     conn.commit()
-    flash("Видео-урок добавлен.", "success")
-    return redirect(url_for("lectures"))
+    return upload_response("Видеоурок успешно загружен и добавлен.", success=True)
 
 @app.route("/admin/lectures/<int:lesson_id>/delete", methods=["POST"])
 @admin_required

@@ -35,7 +35,7 @@
   {% elif current_user.role != 'admin' and lesson_video_kind(lesson.video_url) != 'file' %}
   <p class="lecture-embed-notice muted">Для этой внешней видеоплощадки ограничение перемотки недоступно. Используй загруженный видеофайл, YouTube или Vimeo.</p>
   {% endif %}
-  {% if lesson.viewed_at %}<p class="lecture-viewed-date">Отмечено: {{ lesson.viewed_at }}</p>{% endif %}
+  {% if lesson.viewed_at %}<p class="lecture-viewed-date">Отмечено: {{ lesson.viewed_at|moscow_datetime }}</p>{% endif %}
   <form method="post" action="{{ url_for('mark_lesson_viewed', lesson_id=lesson.id) }}" class="lecture-mark-form auto-view-form" data-lesson-id="{{ lesson.id }}" hidden>
     <input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="course" value="{{ course_filter }}">
   </form>
@@ -62,6 +62,17 @@
     <label class="lecture-publish"><input type="checkbox" name="published" checked> Опубликовать сразу для курсантов</label>
     <button class="btn" type="submit">Добавить видеоурок</button>
   </form>
+  <div class="lecture-upload-progress" id="lecture-upload-progress" aria-live="polite">
+    <div class="lecture-upload-progress-heading">
+      <strong id="lecture-upload-label">Шкала загрузки видео</strong>
+      <span id="lecture-upload-percent">0%</span>
+    </div>
+    <div class="lecture-upload-track" role="progressbar" aria-label="Прогресс загрузки видео" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="lecture-upload-track">
+      <div class="lecture-upload-bar" id="lecture-upload-bar"></div>
+    </div>
+    <div class="lecture-upload-details" id="lecture-upload-details">Выбери видеофайл — здесь будет отображаться ход загрузки.</div>
+    <p class="lecture-upload-state" id="lecture-upload-state">После нажатия «Добавить видеоурок» полоса покажет процент и объём переданного файла.</p>
+  </div>
 </section>
 <section class="panel lecture-admin-panel">
   <h2>📚 Все видеоуроки</h2><p class="muted">Администраторы видят число отметок просмотра. Удаление урока также удалит связанные отметки.</p>
@@ -72,9 +83,10 @@
 <section class="panel lecture-admin-panel">
   <h2>👁 Кто просмотрел лекции</h2><p class="muted">Отметки выставляются автоматически, когда видео доходит до конца.</p>
   <div class="table-wrap"><table><thead><tr><th>Урок</th><th>Курс</th><th>Курсант</th><th>Дата отметки</th></tr></thead><tbody>
-  {% for viewer in viewers %}<tr><td>{{ viewer.title }}</td><td>{{ viewer.course }}-й курс</td><td>{{ viewer.username }}</td><td>{{ viewer.viewed_at }}</td></tr>{% else %}<tr><td colspan="4">Пока нет отметок просмотра.</td></tr>{% endfor %}
+  {% for viewer in viewers %}<tr><td>{{ viewer.title }}</td><td>{{ viewer.course }}-й курс</td><td>{{ viewer.username }}</td><td>{{ viewer.viewed_at|moscow_datetime }}</td></tr>{% else %}<tr><td colspan="4">Пока нет отметок просмотра.</td></tr>{% endfor %}
   </tbody></table></div>
 </section>
+<script src="{{ url_for('static', filename='lecture-upload.js') }}" defer></script>
 {% endif %}
 
 {% if lessons %}

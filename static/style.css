@@ -158,3 +158,18 @@ body{background-color:#050d18;background-image:radial-gradient(ellipse at 50% 0%
 .lecture-embed-controls span{font-size:11px;color:var(--muted);flex:1 1 180px}
 .lecture-embed-controls button:disabled{opacity:.45;cursor:not-allowed}
 .lecture-embed-notice{font-size:11px;margin:-5px 0 14px}
+
+
+/* Upload progress for video lectures */
+.lecture-upload-progress{display:block;margin-top:20px;padding:17px;background:#081522;border:1px solid #2b5274;border-radius:8px;box-shadow:0 8px 24px #0002}
+.lecture-upload-progress[hidden]{display:none!important}
+.lecture-upload-progress-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;font-size:12px}
+.lecture-upload-progress-heading strong{color:#eaf6ff}
+.lecture-upload-progress-heading span{font-weight:800;color:#78c7ff;font-variant-numeric:tabular-nums}
+.lecture-upload-track{display:block;width:100%;height:16px;border:1px solid #47769b;border-radius:10px;overflow:hidden;background:#07101b;box-sizing:border-box}
+.lecture-upload-bar{display:block;height:100%;width:0;background:linear-gradient(90deg,#0877e1,#52b6ff);border-radius:10px;transition:width .12s linear;box-shadow:0 0 14px #168cff55;min-width:0}
+.lecture-upload-details{margin-top:9px;color:#9fc6e6;font-size:11px;overflow-wrap:anywhere}
+.lecture-upload-state{margin:7px 0 0;color:#aabed1;font-size:11px}
+.lecture-upload-state.error{color:#ff9da6}
+.lecture-upload-state.success{color:#7de6ba}
+.lecture-create-form button:disabled{opacity:.65;cursor:wait;transform:none}
