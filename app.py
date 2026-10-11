@@ -328,7 +328,7 @@ def teacher_presence():
 
 def get_teacher_statuses():
     """Возвращает статус преподавателей; онлайн означает активность за последние 75 секунд."""
-    teachers = db().execute("""SELECT u.username,p.last_seen FROM users u
+    teachers = db().execute("""SELECT u.username,u.full_name,p.last_seen FROM users u
         LEFT JOIN teacher_presence p ON p.user_id=u.id
         WHERE u.role='teacher' ORDER BY u.username""").fetchall()
     current_time = datetime.now(timezone.utc)
@@ -343,7 +343,7 @@ def get_teacher_statuses():
                 online = current_time - seen <= timedelta(seconds=75)
             except (ValueError, TypeError):
                 pass
-        statuses.append({"username": teacher["username"], "online": online})
+        statuses.append({"username": teacher["full_name"] or teacher["username"], "online": online})
     return statuses
 
 
@@ -493,7 +493,7 @@ def support_chat(chat_id):
             conn.execute("UPDATE support_chats SET updated_at=? WHERE id=?", (now(), chat_id))
             conn.commit()
             return redirect(url_for("support_chat", chat_id=chat_id))
-    messages = conn.execute("""SELECT m.*,u.username,u.role FROM support_messages m
+    messages = conn.execute("""SELECT m.*,CASE WHEN u.role='admin' THEN u.username ELSE COALESCE(NULLIF(u.full_name,''),u.cadet_static,'Курсант') END AS username,u.role FROM support_messages m
         JOIN users u ON u.id=m.sender_id WHERE m.chat_id=? ORDER BY m.id""", (chat_id,)).fetchall()
     chats = conn.execute("SELECT * FROM support_chats WHERE user_id=? ORDER BY updated_at DESC", (user["id"],)).fetchall()
     return render_template("support.html", chats=chats, chat=chat, messages=messages)
@@ -511,7 +511,7 @@ def support_messages_api(chat_id):
         after_id = max(0, int(request.args.get("after", "0")))
     except (TypeError, ValueError):
         after_id = 0
-    rows = db().execute("""SELECT m.id,m.sender_id,m.message,m.created_at,u.username,u.role
+    rows = db().execute("""SELECT m.id,m.sender_id,m.message,m.created_at,CASE WHEN u.role='admin' THEN u.username ELSE COALESCE(NULLIF(u.full_name,''),u.cadet_static,'Курсант') END AS username,u.role
         FROM support_messages m JOIN users u ON u.id=m.sender_id
         WHERE m.chat_id=? AND m.id>? ORDER BY m.id""", (chat_id, after_id)).fetchall()
     return jsonify([dict(row) for row in rows])
@@ -519,7 +519,7 @@ def support_messages_api(chat_id):
 @app.route("/admin/support")
 @admin_required
 def admin_support():
-    chats = db().execute("""SELECT c.*,u.username,
+    chats = db().execute("""SELECT c.*,CASE WHEN u.role='admin' THEN u.username ELSE COALESCE(NULLIF(u.full_name,''),u.cadet_static,'Курсант') END AS username,
         (SELECT message FROM support_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) last_message,
         (SELECT COUNT(*) FROM support_messages m WHERE m.chat_id=c.id) message_count
         FROM support_chats c JOIN users u ON u.id=c.user_id
@@ -530,7 +530,7 @@ def admin_support():
 @admin_required
 def admin_support_chat(chat_id):
     conn = db()
-    chat = conn.execute("""SELECT c.*,u.username FROM support_chats c
+    chat = conn.execute("""SELECT c.*,CASE WHEN u.role='admin' THEN u.username ELSE COALESCE(NULLIF(u.full_name,''),u.cadet_static,'Курсант') END AS username FROM support_chats c
         JOIN users u ON u.id=c.user_id WHERE c.id=?""", (chat_id,)).fetchone()
     if not chat:
         abort(404)
@@ -557,9 +557,9 @@ def admin_support_chat(chat_id):
                 conn.execute("UPDATE support_chats SET status='open',updated_at=? WHERE id=?", (now(), chat_id))
                 conn.commit()
                 return redirect(url_for("admin_support_chat", chat_id=chat_id))
-    messages = conn.execute("""SELECT m.*,u.username,u.role FROM support_messages m
+    messages = conn.execute("""SELECT m.*,CASE WHEN u.role='admin' THEN u.username ELSE COALESCE(NULLIF(u.full_name,''),u.cadet_static,'Курсант') END AS username,u.role FROM support_messages m
         JOIN users u ON u.id=m.sender_id WHERE m.chat_id=? ORDER BY m.id""", (chat_id,)).fetchall()
-    chats = conn.execute("""SELECT c.*,u.username,
+    chats = conn.execute("""SELECT c.*,CASE WHEN u.role='admin' THEN u.username ELSE COALESCE(NULLIF(u.full_name,''),u.cadet_static,'Курсант') END AS username,
         (SELECT message FROM support_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) last_message,
         (SELECT COUNT(*) FROM support_messages m WHERE m.chat_id=c.id) message_count
         FROM support_chats c JOIN users u ON u.id=c.user_id
@@ -631,7 +631,7 @@ def lectures():
         FROM lessons l {where} ORDER BY l.course,l.id DESC""", [user["id"], *params]).fetchall()
     viewers = []
     if user["role"] == "admin":
-        viewers = conn.execute("""SELECT lv.lesson_id,l.title,l.course,u.username,lv.viewed_at
+        viewers = conn.execute("""SELECT lv.lesson_id,l.title,l.course,CASE WHEN u.role='admin' THEN u.username ELSE COALESCE(NULLIF(u.full_name,''),u.cadet_static,'Курсант') END AS username,lv.viewed_at
             FROM lesson_views lv JOIN lessons l ON l.id=lv.lesson_id
             JOIN users u ON u.id=lv.user_id ORDER BY l.course,l.id DESC,lv.viewed_at DESC""").fetchall()
         all_lessons = conn.execute("""SELECT l.*,
@@ -745,7 +745,7 @@ def admin():
     tests = conn.execute("""SELECT t.*,(SELECT COUNT(*) FROM questions q WHERE q.test_id=t.id) qcount
         FROM tests t ORDER BY t.id DESC""").fetchall()
     users = conn.execute("SELECT id,username,role,created_at,full_name,cadet_static,academy_passed,access_blocked FROM users ORDER BY id DESC").fetchall()
-    attempts = conn.execute("""SELECT a.*,u.username,t.title FROM attempts a
+    attempts = conn.execute("""SELECT a.*,CASE WHEN u.role='admin' THEN u.username ELSE COALESCE(NULLIF(u.full_name,''),u.cadet_static,'Курсант') END AS username,t.title FROM attempts a
         JOIN users u ON u.id=a.user_id JOIN tests t ON t.id=a.test_id
         WHERE a.finished_at IS NOT NULL ORDER BY a.id DESC LIMIT 500""").fetchall()
     internships = conn.execute("SELECT * FROM internships ORDER BY id DESC").fetchall()
@@ -886,10 +886,10 @@ def create_internship():
 @app.route("/admin/internship/<int:internship_id>/assign", methods=["POST"])
 @admin_required
 def assign_internship(internship_id):
-    username = request.form.get("username","").strip()
-    user = db().execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+    cadet_static = request.form.get("cadet_static","").strip()
+    user = db().execute("SELECT id FROM users WHERE cadet_static=? AND role='cadet'", (cadet_static,)).fetchone()
     if not user:
-        flash("Курсант с таким никнеймом не найден.", "danger")
+        flash("Курсант с таким статиком не найден.", "danger")
     else:
         try:
             db().execute("INSERT INTO internship_assignments(internship_id,user_id,status,assigned_at) VALUES(?,?,?,?)",
