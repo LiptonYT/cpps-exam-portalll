@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block title %}Новости | ЦППС{% endblock %}
+{% block content %}
+<section class="news-page">
+  <div class="news-heading">
+    <div><div class="eyebrow">ЦППС • ИНФОРМАЦИОННЫЙ ЦЕНТР</div><h1>Новости и объявления</h1><p>Обновления академии, важные сообщения и новости нашего Discord-сообщества.</p></div>
+    <div class="news-heading-mark">NEWS<span> / ЦППС</span></div>
+  </div>
+  {% if current_user and current_user.role == 'admin' %}
+  <section class="news-admin panel">
+    <div class="news-admin-title"><span class="news-icon">＋</span><div><h2>Опубликовать новость</h2><p>Новость появится в верхнем меню сайта в разделе «Новости».</p></div></div>
+    <form method="post" action="{{ url_for('create_news') }}" class="news-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <label>Заголовок новости<input name="title" maxlength="160" required placeholder="Например: Изменения в Discord-сервере ЦППС"></label>
+      <label>Категория<select name="category"><option>Объявление</option><option>Discord</option><option>Обновление</option><option>Обучение</option><option>Важно</option></select></label>
+      <label class="news-full">Текст новости<textarea name="body" rows="5" required maxlength="10000" placeholder="Напишите, что изменилось, кого касается новость и что нужно сделать..."></textarea></label>
+      <label class="news-full">Ссылка на Discord (необязательно)<input name="discord_url" type="url" placeholder="https://discord.gg/..."></label>
+      <div class="news-form-bottom"><label class="news-publish"><input type="checkbox" name="published" checked> Опубликовать сразу</label><button class="btn" type="submit">Опубликовать новость <span>↗</span></button></div>
+    </form>
+  </section>
+  {% endif %}
+  <div class="news-list-head"><div><span class="news-live-dot"></span> ЛЕНТА НОВОСТЕЙ</div><span>{{ news_items|length }} публикаций</span></div>
+  {% if news_items %}
+    <div class="news-list">
+    {% for item in news_items %}
+      <article class="news-card">
+        <div class="news-card-rail"><span>{{ '%02d'|format(loop.index) }}</span><i></i></div>
+        <div class="news-card-content">
+          <div class="news-meta"><span class="news-category {% if item.category == 'Важно' %}urgent{% elif item.category == 'Discord' %}discord{% endif %}">{{ item.category }}</span><span>{{ item.created_at[:10] }}</span>{% if not item.published %}<span class="news-draft">ЧЕРНОВИК</span>{% endif %}</div>
+          <h2>{{ item.title }}</h2>
+          <div class="news-body">{{ item.body }}</div>
+          {% if item.discord_url %}<a class="news-discord-link" href="{{ item.discord_url }}" target="_blank" rel="noopener noreferrer"><span class="discord-mark">◈</span><span><b>Открыть Discord</b><small>Перейти по ссылке из объявления</small></span><strong>↗</strong></a>{% endif %}
+          {% if current_user and current_user.role == 'admin' %}<form class="news-delete-form" method="post" action="{{ url_for('delete_news', news_id=item.id) }}" onsubmit="return confirm('Удалить эту новость?')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="btn btn-small btn-ghost" type="submit">Удалить новость</button></form>{% endif %}
+        </div>
+        <div class="news-card-index">ЦППС<br><b>ИНФО</b></div>
+      </article>
+    {% endfor %}
+    </div>
+  {% else %}
+    <div class="news-empty"><div class="news-empty-symbol">!</div><h2>Пока нет новостей</h2><p>Когда руководство ЦППС опубликует объявление или новость из Discord, она появится здесь.</p>{% if current_user and current_user.role == 'admin' %}<span>Используйте форму выше, чтобы создать первую публикацию.</span>{% endif %}</div>
+  {% endif %}
+</section>
+{% endblock %}

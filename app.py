@@ -88,13 +88,22 @@ def init_db():
       id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
       video_url TEXT NOT NULL, course INTEGER NOT NULL CHECK(course IN (1,2)),
       published INTEGER NOT NULL DEFAULT 1, created_by INTEGER, created_at TEXT NOT NULL,
+      discord_message_id TEXT UNIQUE,
       FOREIGN KEY(created_by) REFERENCES users(id));
     CREATE TABLE IF NOT EXISTS lesson_views(
       id INTEGER PRIMARY KEY, lesson_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
       viewed_at TEXT NOT NULL, UNIQUE(lesson_id,user_id),
       FOREIGN KEY(lesson_id) REFERENCES lessons(id) ON DELETE CASCADE,
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS news(
+      id INTEGER PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'Объявление', discord_url TEXT NOT NULL DEFAULT '',
+      published INTEGER NOT NULL DEFAULT 1, created_by INTEGER, created_at TEXT NOT NULL,
+      discord_message_id TEXT UNIQUE,
+      FOREIGN KEY(created_by) REFERENCES users(id));
     """)
+    conn.commit()
+
     # Миграция: статусы академии и блокировки аккаунта без потери существующих данных.
     user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     if "academy_passed" not in user_columns:
@@ -184,7 +193,7 @@ def enforce_account_block():
 
 @app.before_request
 def protect_posts():
-    if request.method == "POST":
+    if request.method == "POST" and request.path != "/api/discord/news":
         token = request.form.get("_csrf", "")
         if not token or not secrets.compare_digest(token, session.get("_csrf", "")):
             abort(400, "Сессия формы истекла. Обновите страницу и повторите действие.")
@@ -556,6 +565,52 @@ def admin_support_chat(chat_id):
         FROM support_chats c JOIN users u ON u.id=c.user_id
         WHERE c.status='open' ORDER BY c.updated_at DESC""").fetchall()
     return render_template("support_admin.html", chats=chats, chat=chat, messages=messages)
+
+@app.route("/news")
+def news():
+    conn = db()
+    user = current_user()
+    if user and user["role"] == "admin":
+        items = conn.execute("""SELECT n.*,u.username AS author FROM news n
+            LEFT JOIN users u ON u.id=n.created_by ORDER BY n.id DESC""").fetchall()
+    else:
+        items = conn.execute("""SELECT n.*,u.username AS author FROM news n
+            LEFT JOIN users u ON u.id=n.created_by WHERE n.published=1 ORDER BY n.id DESC""").fetchall()
+    return render_template("news.html", news_items=items)
+
+@app.route("/admin/news/new", methods=["POST"])
+@admin_required
+def create_news():
+    title = request.form.get("title", "").strip()
+    body = request.form.get("body", "").strip()
+    category = request.form.get("category", "Объявление").strip()
+    discord_url = request.form.get("discord_url", "").strip()
+    if not title or not body:
+        flash("Заполните заголовок и текст новости.", "danger")
+        return redirect(url_for("news"))
+    if discord_url:
+        parsed = urlparse(discord_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            flash("Ссылка на Discord должна начинаться с https:// или http://.", "danger")
+            return redirect(url_for("news"))
+    if category not in ("Объявление", "Discord", "Обновление", "Обучение", "Важно"):
+        category = "Объявление"
+    db().execute("""INSERT INTO news(title,body,category,discord_url,published,created_by,created_at)
+        VALUES(?,?,?,?,?,?,?)""", (title, body, category, discord_url,
+        1 if request.form.get("published") == "on" else 0, current_user()["id"], now()))
+    db().commit()
+    flash("Новость опубликована." if request.form.get("published") == "on" else "Черновик новости сохранён.", "success")
+    return redirect(url_for("news"))
+
+@app.route("/admin/news/<int:news_id>/delete", methods=["POST"])
+@admin_required
+def delete_news(news_id):
+    cur = db().execute("DELETE FROM news WHERE id=?", (news_id,))
+    db().commit()
+    if not cur.rowcount:
+        abort(404)
+    flash("Новость удалена.", "success")
+    return redirect(url_for("news"))
 
 @app.route("/lectures")
 @login_required
