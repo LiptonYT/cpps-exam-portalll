@@ -185,8 +185,19 @@ def lesson_embed_url(url):
         return "https://player.vimeo.com/video/" + video_id if video_id.isdigit() else url
     return url
 
+def lesson_video_provider(url):
+    """Return the known provider needed to apply the no-seeking lecture player."""
+    parsed = urlparse(url or "")
+    host = (parsed.netloc or "").lower().split(":")[0]
+    if host == "youtu.be" or host.endswith("youtube.com") or host.endswith("youtube-nocookie.com"):
+        return "youtube"
+    if host == "vimeo.com" or host.endswith(".vimeo.com"):
+        return "vimeo"
+    return "external"
+
 app.jinja_env.globals["lesson_video_kind"] = lesson_video_kind
 app.jinja_env.globals["lesson_embed_url"] = lesson_embed_url
+app.jinja_env.globals["lesson_video_provider"] = lesson_video_provider
 
 def csrf_token():
     if "_csrf" not in session:

@@ -18,13 +18,23 @@
   <div class="lecture-card-top"><span class="tag">{{ lesson.course }} КУРС</span><span class="lecture-view-state {{ 'done' if lesson.viewed_at else 'pending' }}">{{ '✓ ПРОСМОТРЕНО' if lesson.viewed_at else '○ НЕ ОТМЕЧЕНО' }}</span></div>
   <h2>{{ lesson.title }}</h2>
   {% if lesson.description %}<p class="muted lecture-description">{{ lesson.description }}</p>{% endif %}
-  <div class="lecture-video">
+  {% set lesson_provider = lesson_video_provider(lesson.video_url) %}
+  <div class="lecture-video{% if current_user.role != 'admin' and lesson_video_kind(lesson.video_url) != 'file' and lesson_provider in ('youtube', 'vimeo') %} locked-embed{% endif %}">
     {% if lesson_video_kind(lesson.video_url) == 'file' %}
-      <video class="lesson-video-player" data-lesson-id="{{ lesson.id }}" controls preload="metadata" src="{{ lesson.video_url }}">Ваш браузер не поддерживает видео.</video>
+      <video class="lesson-video-player" data-lesson-id="{{ lesson.id }}" data-seek-lock="{{ '0' if current_user.role == 'admin' else '1' }}" controls preload="metadata" src="{{ lesson.video_url }}">Ваш браузер не поддерживает видео.</video>
     {% else %}
-      <iframe class="lesson-embed-player" data-lesson-id="{{ lesson.id }}" src="{{ lesson_embed_url(lesson.video_url) }}" title="{{ lesson.title }}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+      <iframe class="lesson-embed-player" data-lesson-id="{{ lesson.id }}" data-provider="{{ lesson_provider }}" data-seek-lock="{{ '0' if current_user.role == 'admin' else '1' }}" src="{{ lesson_embed_url(lesson.video_url) }}" title="{{ lesson.title }}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
     {% endif %}
   </div>
+  {% if current_user.role != 'admin' and lesson_video_kind(lesson.video_url) != 'file' and lesson_provider in ('youtube', 'vimeo') %}
+  <div class="lecture-embed-controls" data-controls-for="{{ lesson.id }}">
+    <button type="button" class="btn btn-small" data-player-action="play" data-player-for="{{ lesson.id }}" disabled>▶ Воспроизвести</button>
+    <button type="button" class="btn btn-small btn-ghost" data-player-action="pause" data-player-for="{{ lesson.id }}" disabled>Ⅱ Пауза</button>
+    <span>Перемотка отключена — смотри лекцию последовательно.</span>
+  </div>
+  {% elif current_user.role != 'admin' and lesson_video_kind(lesson.video_url) != 'file' %}
+  <p class="lecture-embed-notice muted">Для этой внешней видеоплощадки ограничение перемотки недоступно. Используй загруженный видеофайл, YouTube или Vimeo.</p>
+  {% endif %}
   {% if lesson.viewed_at %}<p class="lecture-viewed-date">Отмечено: {{ lesson.viewed_at }}</p>{% endif %}
   <form method="post" action="{{ url_for('mark_lesson_viewed', lesson_id=lesson.id) }}" class="lecture-mark-form auto-view-form" data-lesson-id="{{ lesson.id }}" hidden>
     <input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="course" value="{{ course_filter }}">
@@ -95,46 +105,133 @@
     }
   }
 
+  // Курсанты не могут перематывать загруженные видео: любой seek возвращается
+  // к последней реально достигнутой позиции. Администратор может перематывать.
   document.querySelectorAll('video.lesson-video-player').forEach(video => {
+    let lastAllowedTime = 0;
+    let restoringPosition = false;
+    if (video.dataset.seekLock === '1') {
+      video.addEventListener('timeupdate', () => {
+        if (!video.seeking && !restoringPosition && Number.isFinite(video.currentTime)) {
+          lastAllowedTime = video.currentTime;
+        }
+      });
+      video.addEventListener('seeking', () => {
+        if (restoringPosition) return;
+        restoringPosition = true;
+        video.currentTime = lastAllowedTime;
+      });
+      video.addEventListener('seeked', () => {
+        if (restoringPosition) restoringPosition = false;
+      });
+      video.addEventListener('keydown', event => {
+        if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+          event.preventDefault();
+        }
+      });
+    }
     video.addEventListener('ended', () => markCompleted(video.dataset.lessonId));
   });
 
-  // Подключение событий завершения YouTube-плееров.
-  const youtubeFrames = [...document.querySelectorAll('iframe.lesson-embed-player')].filter(frame => /youtube\.com\/embed\//i.test(frame.src));
+  const embedControls = lessonId => document.querySelector('[data-controls-for="' + lessonId + '"]');
+  const enableEmbedControls = lessonId => {
+    const controls = embedControls(lessonId);
+    if (controls) controls.querySelectorAll('button').forEach(button => { button.disabled = false; });
+  };
+  const disableEmbedControls = lessonId => {
+    const controls = embedControls(lessonId);
+    if (controls) controls.querySelectorAll('button').forEach(button => { button.disabled = true; });
+  };
+  document.querySelectorAll('[data-player-action][data-player-for]').forEach(button => {
+    button.addEventListener('click', () => {
+      const id = String(button.dataset.playerFor);
+      const action = button.dataset.playerAction;
+      const yt = youtubePlayers.get(id);
+      const vm = vimeoPlayers.get(id);
+      try {
+        if (yt) {
+          if (action === 'play') yt.playVideo(); else yt.pauseVideo();
+        } else if (vm) {
+          const operation = action === 'play' ? vm.play() : vm.pause();
+          if (operation && operation.catch) operation.catch(() => {});
+        }
+      } catch (_) {}
+    });
+  });
+
+  // YouTube: скрываем встроенные средства перемотки у курсантов и даём
+  // отдельные кнопки воспроизведения/паузы, не позволяя взаимодействовать с iframe.
+  const youtubePlayers = new Map();
+  const youtubeFrames = [...document.querySelectorAll('iframe.lesson-embed-player')]
+    .filter(frame => frame.dataset.provider === 'youtube' || /youtube(?:-nocookie)?\.com\/embed\//i.test(frame.src));
   if (youtubeFrames.length) {
     youtubeFrames.forEach(frame => {
       try {
         const url = new URL(frame.src, window.location.href);
         url.searchParams.set('enablejsapi', '1');
         url.searchParams.set('origin', window.location.origin);
+        if (frame.dataset.seekLock === '1') {
+          url.searchParams.set('controls', '0');
+          url.searchParams.set('disablekb', '1');
+          url.searchParams.set('fs', '0');
+        }
         frame.src = url.toString();
       } catch (_) {}
     });
     window.onYouTubeIframeAPIReady = function () {
       youtubeFrames.forEach(frame => {
         try {
-          new YT.Player(frame, { events: { onStateChange: event => {
-            if (event.data === YT.PlayerState.ENDED) markCompleted(frame.dataset.lessonId);
-          }}});
-        } catch (_) {}
+          new YT.Player(frame, { events: {
+            onReady: event => {
+              if (frame.dataset.seekLock === '1') {
+                youtubePlayers.set(String(frame.dataset.lessonId), event.target);
+                enableEmbedControls(frame.dataset.lessonId);
+              }
+            },
+            onStateChange: event => {
+              if (event.data === YT.PlayerState.ENDED) markCompleted(frame.dataset.lessonId);
+            },
+            onError: () => disableEmbedControls(frame.dataset.lessonId)
+          }});
+        } catch (_) { disableEmbedControls(frame.dataset.lessonId); }
       });
     };
     const ytScript = document.createElement('script');
     ytScript.src = 'https://www.youtube.com/iframe_api';
+    ytScript.onerror = () => youtubeFrames.forEach(frame => disableEmbedControls(frame.dataset.lessonId));
     document.head.appendChild(ytScript);
   }
 
   // Подключение событий завершения Vimeo-плееров.
+  const vimeoPlayers = new Map();
   const vimeoFrames = [...document.querySelectorAll('iframe.lesson-embed-player')].filter(frame => /player\.vimeo\.com\/video\//i.test(frame.src));
   if (vimeoFrames.length) {
     vimeoFrames.forEach(frame => {
-      try { const url = new URL(frame.src, window.location.href); url.searchParams.set('api', '1'); frame.src = url.toString(); } catch (_) {}
+      try {
+        const url = new URL(frame.src, window.location.href);
+        url.searchParams.set('api', '1');
+        if (frame.dataset.seekLock === '1') {
+          url.searchParams.set('controls', '0');
+          url.searchParams.set('keyboard', '0');
+        }
+        frame.src = url.toString();
+      } catch (_) {}
     });
     const vimeoScript = document.createElement('script');
     vimeoScript.src = 'https://player.vimeo.com/api/player.js';
     vimeoScript.onload = () => vimeoFrames.forEach(frame => {
-      try { new Vimeo.Player(frame).on('ended', () => markCompleted(frame.dataset.lessonId)); } catch (_) {}
+      try {
+        const player = new Vimeo.Player(frame);
+        player.on('ended', () => markCompleted(frame.dataset.lessonId));
+        if (frame.dataset.seekLock === '1') {
+          player.ready().then(() => {
+            vimeoPlayers.set(String(frame.dataset.lessonId), player);
+            enableEmbedControls(frame.dataset.lessonId);
+          }).catch(() => disableEmbedControls(frame.dataset.lessonId));
+        }
+      } catch (_) { disableEmbedControls(frame.dataset.lessonId); }
     });
+    vimeoScript.onerror = () => vimeoFrames.forEach(frame => disableEmbedControls(frame.dataset.lessonId));
     document.head.appendChild(vimeoScript);
   }
 })();

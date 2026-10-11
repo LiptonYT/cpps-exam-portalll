@@ -18,7 +18,7 @@
       <div class="support-messages">
         {% for message in messages %}
           <article class="support-message {{ 'mine' if message.sender_id == current_user.id else 'theirs' }}" data-message-id="{{ message.id }}">
-            <div class="support-message-meta"><strong>{{ message.username }}</strong><span>{{ 'Начальство ЦППС' if message.role == 'admin' else 'Курсант' }}</span><time>{{ message.created_at[:16].replace('T',' ') }}</time></div>
+            <div class="support-message-meta"><strong>{{ message.username }}</strong><span>{{ 'Начальство ЦППС' if message.role == 'admin' else 'Курсант' }}</span><time>{{ message.created_at | moscow_datetime }}</time></div>
             <p>{{ message.message }}</p>
           </article>
         {% endfor %}
@@ -48,7 +48,15 @@
         const meta = document.createElement('div'); meta.className = 'support-message-meta';
         const name = document.createElement('strong'); name.textContent = item.username;
         const role = document.createElement('span'); role.textContent = item.role === 'admin' ? 'Начальство ЦППС' : 'Курсант';
-        const time = document.createElement('time'); time.textContent = (item.created_at || '').slice(0,16).replace('T',' ');
+        const time = document.createElement('time');
+        const parsedTime = new Date(item.created_at || '');
+        if (Number.isNaN(parsedTime.getTime())) {
+          time.textContent = '—';
+        } else {
+          const parts = new Intl.DateTimeFormat('ru-RU', {timeZone:'Europe/Moscow', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23'}).formatToParts(parsedTime);
+          const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+          time.textContent = values.day + '.' + values.month + '.' + values.year + ' ' + values.hour + ':' + values.minute + ' МСК';
+        }
         meta.append(name, role, time);
         const body = document.createElement('p'); body.textContent = item.message;
         article.append(meta, body); list.appendChild(article);
