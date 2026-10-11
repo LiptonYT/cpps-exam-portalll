@@ -22,7 +22,7 @@
   <div class="exam-result-info-grid">
     <article class="exam-result-info-card"><span class="exam-result-info-icon">▤</span><small>НАЗВАНИЕ ЭКЗАМЕНА</small><b>{{ attempt.title }}</b><em>Аттестационный модуль</em></article>
     <article class="exam-result-info-card"><span class="exam-result-info-icon">◈</span><small>ПОРОГ СДАЧИ</small><b>{{ attempt.pass_percent or 0 }}%</b><em>Минимальный результат</em></article>
-    <article class="exam-result-info-card"><span class="exam-result-info-icon">◷</span><small>ДАТА ЗАВЕРШЕНИЯ</small><b>{{ attempt.finished_at or '—' }}</b><em>Время фиксации результата</em></article>
+    <article class="exam-result-info-card"><span class="exam-result-info-icon">◷</span><small>ДАТА ЗАВЕРШЕНИЯ</small><b>{{ attempt.finished_at|moscow_datetime }}</b><em>Время фиксации результата</em></article>
   </div>
   <div class="exam-result-section-title"><span>02</span><div><small>ДАННЫЕ УЧАСТНИКА</small><h2>Информация о курсанте</h2></div><div class="exam-result-title-line"></div></div>
   <div class="exam-result-record">

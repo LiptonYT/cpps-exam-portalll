@@ -19,6 +19,22 @@ ALLOWED_VIDEO_EXTENSIONS = {"mp4", "webm", "ogg", "mov"}
 def now():
     return datetime.now(timezone.utc).isoformat()
 
+
+@app.template_filter("moscow_datetime")
+def moscow_datetime(value):
+    """Format stored ISO timestamps as Moscow local date and time."""
+    if not value:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        # Stored timestamps are UTC. Treat any legacy naive timestamp as UTC too.
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        moscow_tz = timezone(timedelta(hours=3))
+        return parsed.astimezone(moscow_tz).strftime("%d.%m.%Y %H:%M МСК")
+    except (TypeError, ValueError, OverflowError):
+        return "—"
+
 def db():
     if "db" not in g:
         os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
