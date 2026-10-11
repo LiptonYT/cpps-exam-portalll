@@ -883,6 +883,22 @@ def create_internship():
         flash("Заполните название и описание стажировки.", "danger")
     return redirect(url_for("admin"))
 
+@app.route("/admin/internship/<int:internship_id>/delete", methods=["POST"])
+@admin_required
+def delete_internship(internship_id):
+    conn = db()
+    internship = conn.execute("SELECT id FROM internships WHERE id=?", (internship_id,)).fetchone()
+    if not internship:
+        flash("Стажировка уже удалена или не найдена.", "warning")
+        return redirect(url_for("admin"))
+    # Сначала удаляем назначения, чтобы не оставить связанные записи.
+    conn.execute("DELETE FROM internship_assignments WHERE internship_id=?", (internship_id,))
+    conn.execute("DELETE FROM internships WHERE id=?", (internship_id,))
+    conn.commit()
+    flash("Стажировка и связанные назначения курсантам удалены.", "success")
+    return redirect(url_for("admin"))
+
+
 @app.route("/admin/internship/<int:internship_id>/assign", methods=["POST"])
 @admin_required
 def assign_internship(internship_id):
