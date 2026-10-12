@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Связь с преподавателем | ЦППС{% endblock %}
+{% block content %}
+<div class="page-head"><div class="eyebrow">ЦППС / ОБРАТНАЯ СВЯЗЬ</div><h1>{% if is_teacher %}Сообщения <em>курсантов</em>{% else %}Связь с <em>преподавателем</em>{% endif %}</h1><p>{% if is_teacher %}Отвечай курсантам в личных переписках. Новые сообщения отмечаются уведомлениями.{% else %}Выбери преподавателя и задай вопрос. Ответ появится здесь, а при разрешённых уведомлениях браузер сообщит о нём.{% endif %}</p></div>
+<div class="support-layout">
+  <section class="panel support-sidebar">
+    <h2>{% if is_teacher %}Переписки{% else %}Мои переписки{% endif %}</h2>
+    {% for item in chats %}
+      <a class="support-chat-link {{ 'selected' if chat and chat.id == item.id else '' }}" href="{{ url_for('teacher_message_chat' if is_teacher else 'contact_teacher_chat', chat_id=item.id) }}">
+        <div class="support-chat-top"><strong>{{ item.cadet_name if is_teacher else item.teacher_name }}</strong><span class="status {{ 'good' if item.status == 'open' else 'pending' }}">{{ 'ОТКРЫТО' if item.status == 'open' else 'ЗАКРЫТО' }}</span></div>
+        <p>{{ item.last_message or 'Сообщений пока нет' }}</p><small>Сообщений: {{ item.message_count }}</small>
+      </a>
+    {% else %}<p class="muted">Пока переписок нет.</p>{% endfor %}
+    {% if not is_teacher %}
+    <form method="post" class="stack support-new-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <h3>Написать преподавателю</h3>
+      {% if teachers %}
+      <label>Преподаватель<select name="teacher_id" required>{% for teacher in teachers %}<option value="{{ teacher.id }}">{{ teacher.full_name or teacher.username }}</option>{% endfor %}</select></label>
+      <label>Сообщение<textarea name="message" maxlength="4000" rows="4" placeholder="Напиши вопрос преподавателю…" required></textarea></label>
+      <button class="btn" type="submit">Отправить сообщение →</button>
+      {% else %}<p class="muted">Пока нет зарегистрированных преподавателей. Обратись в поддержку ЦППС.</p>{% endif %}
+    </form>
+    {% endif %}
+  </section>
+  <section class="panel support-conversation">
+    {% if chat %}
+      <div class="support-heading"><div><div class="eyebrow">ЛИЧНАЯ ПЕРЕПИСКА #{{ chat.id }}</div><h2>{{ chat.other_name }}</h2></div><span class="status {{ 'good' if chat.status == 'open' else 'pending' }}">{{ 'ОТКРЫТО' if chat.status == 'open' else 'ЗАКРЫТО' }}</span></div>
+      <div class="support-messages" id="teacher-chat-messages">
+        {% for message in messages %}<article class="support-message {{ 'mine' if message.sender_id == current_user.id else 'theirs' }}" data-message-id="{{ message.id }}"><div class="support-message-meta"><strong>{{ message.username }}</strong><span>{{ 'Преподаватель' if message.role == 'teacher' else ('Администратор' if message.role == 'admin' else 'Курсант') }}</span><time>{{ message.created_at | moscow_datetime }}</time></div><p>{{ message.message }}</p></article>{% endfor %}
+      </div>
+      {% if chat.status == 'open' %}<form method="post" class="support-reply-form"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><textarea name="message" rows="3" maxlength="4000" placeholder="Напиши сообщение…" required></textarea><button class="btn" type="submit">Отправить →</button></form>{% else %}<div class="notice">Переписка закрыта.</div>{% endif %}
+    {% else %}<div class="support-empty"><div class="empty-icon">✉</div><h2>{% if is_teacher %}Переписки с курсантами{% else %}Задай вопрос преподавателю{% endif %}</h2><p>{% if is_teacher %}Выбери переписку слева, чтобы ответить курсанту.{% else %}Выбери преподавателя слева и отправь сообщение. Переписка сохранится в твоём кабинете.{% endif %}</p></div>{% endif %}
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+{% if chat %}<script>
+(function(){
+  const list=document.getElementById('teacher-chat-messages'); if(!list)return;
+  let lastId=Math.max(0,...Array.from(list.querySelectorAll('[data-message-id]')).map(el=>Number(el.dataset.messageId||0)));
+  const endpoint={{ url_for('teacher_chat_api', chat_id=chat.id)|tojson }};
+  function moscowTime(value){const d=new Date(value);if(Number.isNaN(d.getTime()))return '—';const p=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d);const v=Object.fromEntries(p.map(x=>[x.type,x.value]));return `${v.day}.${v.month}.${v.year} ${v.hour}:${v.minute} МСК`;}
+  async function update(){try{const r=await fetch(endpoint+'?after='+lastId,{credentials:'same-origin',cache:'no-store'});if(!r.ok)return;const items=await r.json();for(const x of items){if(document.querySelector('[data-message-id="'+x.id+'"]'))continue;const a=document.createElement('article');a.className='support-message '+(x.sender_id=== {{ current_user.id }}?'mine':'theirs');a.dataset.messageId=x.id;const meta=document.createElement('div');meta.className='support-message-meta';const n=document.createElement('strong');n.textContent=x.username;const role=document.createElement('span');role.textContent=x.role==='teacher'?'Преподаватель':(x.role==='admin'?'Администратор':'Курсант');const t=document.createElement('time');t.textContent=moscowTime(x.created_at);meta.append(n,role,t);const p=document.createElement('p');p.textContent=x.message;a.append(meta,p);list.appendChild(a);lastId=Math.max(lastId,x.id);}if(items.length)list.scrollTop=list.scrollHeight;}catch(_){}}
+  list.scrollTop=list.scrollHeight;setInterval(update,5000);
+})();
+</script>{% endif %}
+{% endblock %}

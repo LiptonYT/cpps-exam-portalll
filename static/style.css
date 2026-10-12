@@ -173,3 +173,15 @@ body{background-color:#050d18;background-image:radial-gradient(ellipse at 50% 0%
 .lecture-upload-state.error{color:#ff9da6}
 .lecture-upload-state.success{color:#7de6ba}
 .lecture-create-form button:disabled{opacity:.65;cursor:wait;transform:none}
+
+/* Teacher contact and browser notification controls */
+.notification-toast{position:fixed;right:18px;bottom:18px;z-index:1000;display:none;width:min(390px,calc(100vw - 36px));background:#101923;border:1px solid #168cff;border-radius:14px;box-shadow:0 16px 48px #0008;overflow:hidden}
+.notification-toast.visible{display:block;animation:notification-in .2s ease-out}
+.notification-toast a{display:block;padding:15px 17px;color:var(--text,#f4f7fb);text-decoration:none}
+.notification-toast strong,.notification-toast span{display:block}
+.notification-toast strong{font-size:13px;margin-bottom:5px;color:#8ccaff}
+.notification-toast span{font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+#enable-browser-notifications{white-space:nowrap}
+#enable-browser-notifications.notification-enabled{border-color:#168cff;color:#8ccaff}
+@keyframes notification-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:800px){.nav{gap:10px}.nav nav{flex-wrap:wrap}.nav-user{flex-wrap:wrap}#enable-browser-notifications{font-size:10px}}

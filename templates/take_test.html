@@ -9,41 +9,84 @@
     .wrap{max-width:900px;margin:0 auto}.top,.card{background:rgba(21,29,41,.97);border:1px solid var(--line);border-radius:16px;padding:22px;margin-bottom:18px;box-shadow:0 12px 35px #0003}
     h1,h2{margin:0 0 12px}h1{font-size:clamp(24px,4vw,34px)}h2{font-size:20px;color:var(--gold)}p,.muted{color:var(--muted)}.pill{display:inline-block;border:1px solid #8d6a2b;color:var(--gold);padding:5px 10px;border-radius:30px;font-size:13px}
     label{display:block;font-weight:700;margin:14px 0 7px}input[type=text]{width:100%;padding:13px;border:1px solid #3a4658;border-radius:9px;background:#0c121b;color:white;font:inherit}input:focus{outline:2px solid #eab44766;border-color:var(--gold)}
-    .question{padding:18px 0;border-top:1px solid var(--line)}.question:first-of-type{border-top:0}.qtitle{font-weight:700;margin:0 0 12px}.option{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;margin:7px 0;border:1px solid #2c3747;border-radius:9px;cursor:pointer;background:var(--panel2)}.option:hover{border-color:var(--gold)}.option input{margin-top:5px;accent-color:var(--gold)}
+    .question{padding:18px 0;border-top:1px solid var(--line)}.question.is-hidden{display:none}.obzvon-progress{height:5px;border-radius:9px;background:#273343;overflow:hidden;margin:10px 0 15px}.obzvon-progress span{display:block;height:100%;width:0;background:var(--gold);transition:width .2s}.question-controls{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:14px 0}.question-counter{color:var(--muted);font-weight:700}.secondary-btn{background:#273343;color:var(--text);border:1px solid #435267}.question-controls button:disabled{opacity:.4;cursor:not-allowed}.obzvon-note{color:var(--muted);font-size:13px}.question:first-of-type{border-top:0}.qtitle{font-weight:700;margin:0 0 12px}.option{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;margin:7px 0;border:1px solid #2c3747;border-radius:9px;cursor:pointer;background:var(--panel2)}.option:hover{border-color:var(--gold)}.option input{margin-top:5px;accent-color:var(--gold)}
     button{border:0;border-radius:10px;padding:14px 20px;background:var(--gold);color:#141414;font-weight:800;font-size:16px;cursor:pointer}button:hover{filter:brightness(1.08)}.timer{font-size:18px;font-weight:800;color:var(--gold)}.flash{padding:12px;border-radius:8px;background:#402426;color:#ffd6d6;margin-bottom:12px}
     @media(max-width:600px){body{padding:12px}.top,.card{padding:16px}}
   </style>
 </head>
 <body><main class="wrap">
-  <header class="top"><span class="pill">ЦППС • ЭКЗАМЕН</span><h1>{{ test.title }}</h1><p>{{ test.description or 'Внимательно прочитайте вопросы и выберите ответы.' }}</p><div class="timer">Осталось времени: <span id="time">{{ test.duration_minutes }}:00</span></div></header>
+  <header class="top"><span class="pill">ЦППС • {{ 'ТЕСТ ОБЗВОН' if test.event_type == 'obzvon' else 'ЭКЗАМЕН' }}</span><h1>{{ test.title }}</h1><p>{{ test.description or 'Внимательно прочитайте вопросы и выберите ответы.' }}</p><div class="timer">Осталось времени: <span id="time">{{ test.duration_minutes }}:00</span></div></header>
   {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="flash">{{ message }}</div>{% endfor %}{% endwith %}
   <form id="exam-form" method="post" autocomplete="off">
     <input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="attempt_id" value="{{ attempt_id }}">
     <section class="card">
-      <h2>Данные проведения экзамена</h2>
+      <h2>{{ 'Данные проведения обзвона' if test.event_type == 'obzvon' else 'Данные проведения экзамена' }}</h2>
       <label for="cadet_full_name">Имя и фамилия курсанта *</label><input id="cadet_full_name" name="cadet_full_name" type="text" maxlength="120" placeholder="Например: Иван Иванов" required>
       <label for="cadet_static">Статик курсанта *</label><input id="cadet_static" name="cadet_static" type="text" maxlength="40" placeholder="Например: 123-456" required>
       <label for="examiner_full_name">Имя и фамилия экзаменатора *</label><input id="examiner_full_name" name="examiner_full_name" type="text" maxlength="120" placeholder="Например: Пётр Петров" required>
     </section>
-    <section class="card"><h2>Вопросы экзамена</h2>
+    <section class="card" id="questions-card"><h2>{{ 'Вопросы обзвона' if test.event_type == 'obzvon' else 'Вопросы экзамена' }}</h2>
+      {% if test.event_type == 'obzvon' %}<p class="obzvon-note">Отвечай по порядку. После выбора ответа система автоматически откроет следующий вопрос. В вопросах с несколькими правильными ответами нажми «Ответить и дальше».</p><div class="obzvon-progress"><span id="obzvon-progress-fill"></span></div><div class="question-controls"><span id="obzvon-counter" class="question-counter">Вопрос 1 из {{ questions|length }}</span><span id="obzvon-status" class="obzvon-note" aria-live="polite">Выбери ответ</span></div>{% endif %}
       {% for q in questions %}
-      <div class="question"><p class="qtitle">{{ loop.index }}. {{ q.prompt }}{% if q.question_type == 'multiple' %} <span class="pill">Выберите все правильные ответы</span>{% endif %}</p>
+      <div class="question{% if test.event_type == 'obzvon' and not loop.first %} is-hidden{% endif %}"{% if test.event_type == 'obzvon' %} data-question-step="{{ loop.index0 }}"{% endif %}><p class="qtitle">{{ loop.index }}. {{ q.prompt }}{% if q.question_type == 'multiple' %} <span class="pill">Выберите все правильные ответы</span>{% endif %}</p>
         {% for letter in ['A','B','C','D'] %}
           {% set key = letter|lower %}
           <label class="option"><input type="{{ 'checkbox' if q.question_type == 'multiple' else 'radio' }}" name="q_{{ q.id }}" value="{{ letter }}"><span><b>{{ letter }}.</b> {{ q[key] }}</span></label>
         {% endfor %}
       </div>
       {% endfor %}
+      {% if test.event_type == 'obzvon' %}<div class="question-controls" id="obzvon-controls"><button type="button" class="secondary-btn" id="obzvon-back" disabled>← Назад</button><button type="button" id="obzvon-next">Ответить и дальше →</button></div>{% endif %}
     </section>
-    <button type="submit" id="submit-btn">Завершить экзамен</button>
+    <button type="submit" id="submit-btn">{{ 'Завершить обзвон' if test.event_type == 'obzvon' else 'Завершить экзамен' }}</button>
   </form>
 </main>
 <script>
 (function(){
-  let remaining = {{ test.duration_minutes|int }} * 60;
+  const isObzvon = {{ 'true' if test.event_type == 'obzvon' else 'false' }};
   const display = document.getElementById('time');
   const form = document.getElementById('exam-form');
   const btn = document.getElementById('submit-btn');
+  if (isObzvon) {
+    const steps = Array.from(document.querySelectorAll('[data-question-step]'));
+    const counter = document.getElementById('obzvon-counter');
+    const status = document.getElementById('obzvon-status');
+    const fill = document.getElementById('obzvon-progress-fill');
+    const back = document.getElementById('obzvon-back');
+    const next = document.getElementById('obzvon-next');
+    let current = 0;
+    function showStep(index) {
+      current = Math.max(0, Math.min(steps.length - 1, index));
+      steps.forEach((step, i) => step.classList.toggle('is-hidden', i !== current));
+      counter.textContent = 'Вопрос ' + (current + 1) + ' из ' + steps.length;
+      fill.style.width = ((current + 1) / steps.length * 100) + '%';
+      back.disabled = current === 0;
+      const qInputs = steps[current].querySelectorAll('input[type=radio],input[type=checkbox]');
+      const isMultiple = qInputs.length && qInputs[0].type === 'checkbox';
+      next.textContent = current === steps.length - 1 ? 'К завершению →' : (isMultiple ? 'Ответить и дальше →' : 'Дальше →');
+      const answered = Array.from(qInputs).some(input => input.checked);
+      status.textContent = answered ? 'Ответ выбран' : 'Выбери ответ';
+    }
+    steps.forEach((step, idx) => {
+      step.querySelectorAll('input[type=radio]').forEach(input => input.addEventListener('change', () => {
+        status.textContent = 'Ответ выбран';
+        if (idx < steps.length - 1) {
+          window.setTimeout(() => showStep(idx + 1), 180);
+        } else {
+          status.textContent = 'Последний ответ выбран';
+        }
+      }));
+    });
+    back.addEventListener('click', () => showStep(current - 1));
+    next.addEventListener('click', () => {
+      const inputs = steps[current].querySelectorAll('input[type=radio],input[type=checkbox]');
+      const answered = Array.from(inputs).some(input => input.checked);
+      if (!answered) { status.textContent = 'Сначала выбери ответ'; return; }
+      if (current < steps.length - 1) showStep(current + 1);
+      else { document.getElementById('cadet_full_name').focus({preventScroll:true}); btn.scrollIntoView({behavior:'smooth',block:'center'}); }
+    });
+    showStep(0);
+  }
+  let remaining = {{ test.duration_minutes|int }} * 60;
   function tick(){const m=Math.floor(remaining/60),s=remaining%60;display.textContent=m+':'+String(s).padStart(2,'0');if(remaining<=0){btn.disabled=true;btn.textContent='Время вышло — отправка…';form.querySelectorAll('[required]').forEach(x=>x.required=false);form.submit();return;}remaining--;}
   tick();setInterval(tick,1000);
   form.addEventListener('submit',function(){btn.disabled=true;btn.textContent='Сохраняем результат…';});

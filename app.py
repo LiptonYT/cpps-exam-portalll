@@ -1,7 +1,8 @@
-import os, sqlite3, secrets, json, re
+import os, sqlite3, secrets, json, re, hashlib, smtplib, ssl
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timezone, timedelta
 from functools import wraps
+from email.message import EmailMessage
 from flask import Flask, g, render_template, request, redirect, url_for, session, flash, abort, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -15,6 +16,16 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                  MAX_CONTENT_LENGTH=int(os.environ.get("MAX_UPLOAD_BYTES", str(512 * 1024 * 1024))))
 VIDEO_UPLOAD_DIR = os.path.join(APP_DIR, "static", "uploads", "lectures")
 ALLOWED_VIDEO_EXTENSIONS = {"mp4", "webm", "ogg", "mov"}
+
+# Баллы начисляются только после проверки заявки администратором.
+TEACHER_ACTIVITY_POINTS = {"exam": 3, "obzvon": 3, "lecture": 2, "internship": 3, "interview": 1}
+TEACHER_ACTIVITY_LABELS = {
+    "exam": "Проведение экзамена",
+    "obzvon": "Проведение обзвона",
+    "lecture": "Проведение лекции",
+    "internship": "Проведение стажировки",
+    "interview": "Проведение собеседования",
+}
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -56,7 +67,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS users(
       id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'cadet', created_at TEXT NOT NULL,
-      full_name TEXT NOT NULL DEFAULT '', cadet_static TEXT NOT NULL DEFAULT '',
+      full_name TEXT NOT NULL DEFAULT '', cadet_static TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
       password_set INTEGER NOT NULL DEFAULT 0, academy_passed INTEGER NOT NULL DEFAULT 0, access_blocked INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS tests(
       id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT DEFAULT '',
@@ -100,6 +111,23 @@ def init_db():
       message TEXT NOT NULL, created_at TEXT NOT NULL,
       FOREIGN KEY(chat_id) REFERENCES support_chats(id) ON DELETE CASCADE,
       FOREIGN KEY(sender_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS password_reset_tokens(
+      id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL, used_at TEXT,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id);
+    CREATE TABLE IF NOT EXISTS teacher_chats(
+      id INTEGER PRIMARY KEY, cadet_id INTEGER NOT NULL, teacher_id INTEGER NOT NULL,
+      title TEXT NOT NULL DEFAULT 'Вопрос преподавателю', status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(cadet_id,teacher_id),
+      FOREIGN KEY(cadet_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY(teacher_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS teacher_messages(
+      id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, sender_id INTEGER NOT NULL,
+      message TEXT NOT NULL, created_at TEXT NOT NULL,
+      FOREIGN KEY(chat_id) REFERENCES teacher_chats(id) ON DELETE CASCADE,
+      FOREIGN KEY(sender_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS lessons(
       id INTEGER PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
       video_url TEXT NOT NULL, course INTEGER NOT NULL CHECK(course IN (1,2)),
@@ -117,6 +145,13 @@ def init_db():
       published INTEGER NOT NULL DEFAULT 1, created_by INTEGER, created_at TEXT NOT NULL,
       discord_message_id TEXT UNIQUE,
       FOREIGN KEY(created_by) REFERENCES users(id));
+    CREATE TABLE IF NOT EXISTS teacher_point_entries(
+      id INTEGER PRIMARY KEY, teacher_id INTEGER NOT NULL, activity_type TEXT NOT NULL,
+      description TEXT NOT NULL, points INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL, reviewed_by INTEGER, reviewed_at TEXT, admin_note TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY(teacher_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY(reviewed_by) REFERENCES users(id));
+    CREATE INDEX IF NOT EXISTS idx_teacher_points_teacher ON teacher_point_entries(teacher_id, status);
     """)
     conn.commit()
 
@@ -132,6 +167,9 @@ def init_db():
         conn.execute("ALTER TABLE users ADD COLUMN cadet_static TEXT NOT NULL DEFAULT ''")
     if "password_set" not in user_columns:
         conn.execute("ALTER TABLE users ADD COLUMN password_set INTEGER NOT NULL DEFAULT 0")
+    if "email" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique ON users(lower(email)) WHERE email != ''")
 
     # Миграция: тип мероприятия добавляется без удаления существующих экзаменов.
     test_columns = {row[1] for row in conn.execute("PRAGMA table_info(tests)").fetchall()}
@@ -229,7 +267,7 @@ def current_user():
     uid = session.get("user_id")
     if not uid:
         return None
-    return db().execute("SELECT id,username,role,created_at,full_name,cadet_static,academy_passed,access_blocked FROM users WHERE id=?", (uid,)).fetchone()
+    return db().execute("SELECT id,username,role,created_at,full_name,cadet_static,email,academy_passed,access_blocked FROM users WHERE id=?", (uid,)).fetchone()
 
 @app.context_processor
 def inject_user():
@@ -275,6 +313,7 @@ def register():
         last_name = request.form.get("last_name", "").strip()
         cadet_static = request.form.get("cadet_static", "").strip()
         password = request.form.get("password", "")
+        email = request.form.get("email", "").strip().lower()
         full_name = f"{first_name} {last_name}".strip()
         name_pattern = re.compile(r"^[А-Яа-яЁё][А-Яа-яЁё -]{0,39}$")
         static_pattern = re.compile(r"^[0-9]{1,10}(?:-[0-9]{1,10})?$")
@@ -282,16 +321,20 @@ def register():
             flash("Введите имя и фамилию русскими буквами.", "danger")
         elif not static_pattern.fullmatch(cadet_static):
             flash("Введите статик цифрами, например 855-024.", "danger")
+        elif not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            flash("Введите корректный адрес электронной почты — он нужен для восстановления пароля.", "danger")
         elif len(password) < 8:
             flash("Пароль должен содержать минимум 8 символов.", "danger")
+        elif db().execute("SELECT 1 FROM users WHERE lower(email)=lower(?) AND email!=''", (email,)).fetchone():
+            flash("Этот адрес электронной почты уже привязан к аккаунту.", "danger")
         elif db().execute("SELECT 1 FROM users WHERE cadet_static=? AND cadet_static!=''", (cadet_static,)).fetchone():
             flash("Этот статик уже зарегистрирован.", "danger")
         else:
             internal_username = "cadet_" + cadet_static.replace("-", "_")
             try:
-                db().execute("""INSERT INTO users(username,password_hash,role,created_at,full_name,cadet_static,password_set)
-                    VALUES(?,?,?,?,?,?,1)""",
-                    (internal_username, generate_password_hash(password), "cadet", now(), full_name, cadet_static))
+                db().execute("""INSERT INTO users(username,password_hash,role,created_at,full_name,cadet_static,email,password_set)
+                    VALUES(?,?,?,?,?,?,?,1)""",
+                    (internal_username, generate_password_hash(password), "cadet", now(), full_name, cadet_static, email))
                 db().commit()
                 flash("Регистрация завершена. Теперь войдите по статику и паролю.", "success")
                 return redirect(url_for("login"))
@@ -336,6 +379,112 @@ def login():
         flash("Проверьте статик и пароль либо данные администратора.", "danger")
     return render_template("auth.html", mode="login")
 
+def send_email(to_address, subject, body):
+    """Send mail using SMTP settings configured in environment variables."""
+    host = os.environ.get("SMTP_HOST", "").strip()
+    username = os.environ.get("SMTP_USER", "").strip()
+    password = os.environ.get("SMTP_PASSWORD", "")
+    sender = os.environ.get("SMTP_FROM", username).strip()
+    if not host or not sender:
+        raise RuntimeError("SMTP не настроен: задайте SMTP_HOST и SMTP_FROM (а также данные авторизации, если нужны).")
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    use_ssl = os.environ.get("SMTP_USE_SSL", "0") == "1"
+    use_tls = os.environ.get("SMTP_USE_TLS", "1") == "1"
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = to_address
+    msg.set_content(body)
+    if use_ssl:
+        with smtplib.SMTP_SSL(host, port, timeout=20, context=ssl.create_default_context()) as server:
+            if username:
+                server.login(username, password)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(host, port, timeout=20) as server:
+            server.ehlo()
+            if use_tls:
+                server.starttls(context=ssl.create_default_context())
+                server.ehlo()
+            if username:
+                server.login(username, password)
+            server.send_message(msg)
+
+@app.route("/account/email", methods=["GET", "POST"])
+@login_required
+def account_email():
+    user = current_user()
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            flash("Введите корректный адрес электронной почты.", "danger")
+        elif db().execute("SELECT id FROM users WHERE lower(email)=lower(?) AND email!='' AND id!=?", (email, user["id"])).fetchone():
+            flash("Этот адрес уже привязан к другому аккаунту.", "danger")
+        else:
+            db().execute("UPDATE users SET email=? WHERE id=?", (email, user["id"]))
+            db().commit()
+            flash("Электронная почта сохранена. Используйте этот адрес для восстановления пароля.", "success")
+            return redirect(url_for("account_email"))
+    return render_template("account_email.html", email=user["email"] or "")
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        # Keep the response generic to avoid disclosing which addresses have accounts.
+        user = db().execute("SELECT id,email FROM users WHERE lower(email)=lower(?) AND email!=''", (email,)).fetchone() if email else None
+        if user:
+            raw_token = secrets.token_urlsafe(40)
+            token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+            expiry = (datetime.now(timezone.utc) + timedelta(minutes=45)).isoformat()
+            db().execute("UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL", (now(), user["id"]))
+            db().execute("INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES(?,?,?)", (user["id"], token_hash, expiry))
+            db().commit()
+            site_url = os.environ.get("SITE_URL", "").strip().rstrip("/")
+            reset_path = url_for("reset_password", token=raw_token)
+            reset_url = site_url + reset_path if site_url else url_for("reset_password", token=raw_token, _external=True)
+            try:
+                send_email(user["email"], "Восстановление пароля — ЦППС", "Здравствуйте!\n\nЧтобы задать новый пароль для портала ЦППС, откройте ссылку (действует 45 минут и используется один раз):\n" + reset_url + "\n\nЕсли вы не запрашивали восстановление, просто проигнорируйте это письмо.")
+            except Exception as exc:
+                app.logger.exception("Не удалось отправить письмо восстановления")
+                flash("Почта пока не настроена или письмо не отправлено. Администратору нужно проверить SMTP-настройки сайта.", "danger")
+                return render_template("forgot_password.html")
+        flash("Если аккаунт с таким адресом существует, на почту отправлена ссылка для восстановления пароля.", "success")
+        return render_template("forgot_password.html")
+    return render_template("forgot_password.html")
+
+@app.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_password(token):
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    record = db().execute("""SELECT id,user_id,expires_at FROM password_reset_tokens
+        WHERE token_hash=? AND used_at IS NULL""", (token_hash,)).fetchone()
+    valid = False
+    if record:
+        try:
+            expires = datetime.fromisoformat(record["expires_at"])
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            valid = expires > datetime.now(timezone.utc)
+        except (ValueError, TypeError):
+            valid = False
+    if not valid:
+        flash("Ссылка восстановления недействительна или срок её действия истёк. Запросите новую.", "danger")
+        return redirect(url_for("forgot_password"))
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm_password", "")
+        if len(password) < 8:
+            flash("Новый пароль должен содержать минимум 8 символов.", "danger")
+        elif password != confirm:
+            flash("Пароли не совпадают.", "danger")
+        else:
+            db().execute("UPDATE users SET password_hash=?,password_set=1 WHERE id=?", (generate_password_hash(password), record["user_id"]))
+            db().execute("UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL", (now(), record["user_id"]))
+            db().commit()
+            flash("Пароль изменён. Теперь войдите с новым паролем.", "success")
+            return redirect(url_for("login"))
+    return render_template("reset_password.html")
+
 @app.route("/logout", methods=["POST"])
 @login_required
 def logout():
@@ -373,6 +522,86 @@ def get_teacher_statuses():
         statuses.append({"username": teacher["full_name"] or teacher["username"], "online": online})
     return statuses
 
+
+@app.route("/teacher/points", methods=["GET"])
+@login_required
+def teacher_points():
+    user = current_user()
+    if user["role"] not in ("teacher", "admin"):
+        abort(403)
+    conn = db()
+    entries = conn.execute("""SELECT * FROM teacher_point_entries
+        WHERE teacher_id=? ORDER BY id DESC LIMIT 200""", (user["id"],)).fetchall()
+    totals = conn.execute("""SELECT
+        COALESCE(SUM(CASE WHEN status='approved' THEN points ELSE 0 END),0) AS approved,
+        COALESCE(SUM(CASE WHEN status='pending' THEN points ELSE 0 END),0) AS pending,
+        COUNT(CASE WHEN status='approved' THEN 1 END) AS approved_count
+        FROM teacher_point_entries WHERE teacher_id=?""", (user["id"],)).fetchone()
+    return render_template("teacher_points.html", entries=entries, totals=totals,
+                           activity_points=TEACHER_ACTIVITY_POINTS, activity_labels=TEACHER_ACTIVITY_LABELS)
+
+@app.route("/teacher/points/submit", methods=["POST"])
+@login_required
+def teacher_points_submit():
+    user = current_user()
+    if user["role"] != "teacher":
+        abort(403)
+    activity_type = request.form.get("activity_type", "")
+    description = request.form.get("description", "").strip()
+    if activity_type not in TEACHER_ACTIVITY_POINTS:
+        flash("Выберите вид проведённого мероприятия.", "danger")
+    elif not description or len(description) > 800:
+        flash("Добавьте описание или подтверждение проведения (до 800 символов).", "danger")
+    else:
+        db().execute("""INSERT INTO teacher_point_entries
+            (teacher_id,activity_type,description,points,status,created_at) VALUES(?,?,?,?,?,?)""",
+            (user["id"], activity_type, description, TEACHER_ACTIVITY_POINTS[activity_type], "pending", now()))
+        db().commit()
+        flash("Заявка отправлена руководству. Баллы будут начислены после проверки.", "success")
+    return redirect(url_for("teacher_points"))
+
+@app.route("/admin/teacher-points/grant", methods=["POST"])
+@admin_required
+def grant_teacher_points():
+    teacher_id = safe_int(request.form.get("teacher_id"), 0, 1, 2**31 - 1)
+    points = safe_int(request.form.get("points"), 0, 1, 1000)
+    activity_type = request.form.get("activity_type", "other")
+    description = request.form.get("description", "").strip()
+    allowed_types = set(TEACHER_ACTIVITY_POINTS) | {"other"}
+    conn = db()
+    teacher = conn.execute("SELECT id FROM users WHERE id=? AND role='teacher'", (teacher_id,)).fetchone()
+    if not teacher or points < 1 or activity_type not in allowed_types or not description or len(description) > 800:
+        flash("Проверьте преподавателя, вид мероприятия, описание и количество баллов (1–1000).", "danger")
+    else:
+        label = TEACHER_ACTIVITY_LABELS.get(activity_type, "Дополнительные баллы")
+        conn.execute("""INSERT INTO teacher_point_entries
+            (teacher_id,activity_type,description,points,status,created_at,reviewed_by,reviewed_at,admin_note)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
+            (teacher_id, activity_type, f"{label}: {description}", points, "approved", now(), current_user()["id"], now(), "Начислено администратором"))
+        conn.commit()
+        flash("Баллы вручную начислены преподавателю.", "success")
+    return redirect(url_for("admin"))
+
+@app.route("/admin/teacher-points/<int:entry_id>/review", methods=["POST"])
+@admin_required
+def review_teacher_points(entry_id):
+    conn = db()
+    entry = conn.execute("SELECT * FROM teacher_point_entries WHERE id=?", (entry_id,)).fetchone()
+    if not entry:
+        abort(404)
+    new_status = request.form.get("status", "")
+    note = request.form.get("admin_note", "").strip()[:500]
+    if entry["status"] != "pending":
+        flash("Эта заявка уже рассмотрена.", "warning")
+    elif new_status not in ("approved", "rejected"):
+        flash("Неизвестное действие с заявкой.", "danger")
+    else:
+        conn.execute("""UPDATE teacher_point_entries SET status=?, reviewed_by=?, reviewed_at=?, admin_note=?
+            WHERE id=? AND status='pending'""", (new_status, current_user()["id"], now(), note, entry_id))
+        conn.commit()
+        flash("Баллы начислены преподавателю." if new_status == "approved" else "Заявка отклонена.",
+              "success" if new_status == "approved" else "warning")
+    return redirect(url_for("admin"))
 
 @app.route("/dashboard")
 @login_required
@@ -593,6 +822,153 @@ def admin_support_chat(chat_id):
         WHERE c.status='open' ORDER BY c.updated_at DESC""").fetchall()
     return render_template("support_admin.html", chats=chats, chat=chat, messages=messages)
 
+@app.route("/contact-teachers", methods=["GET", "POST"])
+@login_required
+def contact_teachers():
+    user = current_user()
+    if user["role"] != "cadet":
+        return redirect(url_for("teacher_messages"))
+    conn = db()
+    teachers = conn.execute("SELECT id,full_name,cadet_static,username FROM users WHERE role='teacher' ORDER BY full_name,username").fetchall()
+    if request.method == "POST":
+        teacher_id = safe_int(request.form.get("teacher_id"), 0, 1, 2147483647)
+        message = request.form.get("message", "").strip()
+        teacher = conn.execute("SELECT id FROM users WHERE id=? AND role='teacher'", (teacher_id,)).fetchone()
+        if not teacher:
+            flash("Выбери действующего преподавателя.", "danger")
+        elif not message or len(message) > 4000:
+            flash("Сообщение должно содержать от 1 до 4000 символов.", "danger")
+        else:
+            timestamp = now()
+            conn.execute("INSERT OR IGNORE INTO teacher_chats(cadet_id,teacher_id,title,status,created_at,updated_at) VALUES(?,?,?,'open',?,?)",
+                         (user["id"], teacher_id, "Вопрос преподавателю", timestamp, timestamp))
+            chat = conn.execute("SELECT id FROM teacher_chats WHERE cadet_id=? AND teacher_id=?", (user["id"], teacher_id)).fetchone()
+            conn.execute("INSERT INTO teacher_messages(chat_id,sender_id,message,created_at) VALUES(?,?,?,?)",
+                         (chat["id"], user["id"], message, timestamp))
+            conn.execute("UPDATE teacher_chats SET status='open',updated_at=? WHERE id=?", (timestamp, chat["id"]))
+            conn.commit()
+            flash("Сообщение отправлено преподавателю.", "success")
+            return redirect(url_for("contact_teacher_chat", chat_id=chat["id"]))
+    chats = conn.execute("""SELECT c.*,COALESCE(NULLIF(t.full_name,''),t.username) AS teacher_name,
+        (SELECT message FROM teacher_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) last_message,
+        (SELECT COUNT(*) FROM teacher_messages m WHERE m.chat_id=c.id) message_count
+        FROM teacher_chats c JOIN users t ON t.id=c.teacher_id WHERE c.cadet_id=? ORDER BY c.updated_at DESC""", (user["id"],)).fetchall()
+    return render_template("teacher_chat.html", teachers=teachers, chats=chats, chat=None, messages=[], is_teacher=False)
+
+@app.route("/contact-teachers/<int:chat_id>", methods=["GET", "POST"])
+@login_required
+def contact_teacher_chat(chat_id):
+    user = current_user()
+    if user["role"] != "cadet": abort(403)
+    return _teacher_chat_page(chat_id, user, is_teacher=False)
+
+@app.route("/teacher/messages", methods=["GET"])
+@login_required
+def teacher_messages():
+    user = current_user()
+    if user["role"] not in ("teacher", "admin"): abort(403)
+    chats = db().execute("""SELECT c.*,COALESCE(NULLIF(u.full_name,''),u.cadet_static,u.username) AS cadet_name,
+        (SELECT message FROM teacher_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) last_message,
+        (SELECT COUNT(*) FROM teacher_messages m WHERE m.chat_id=c.id) message_count
+        FROM teacher_chats c JOIN users u ON u.id=c.cadet_id WHERE c.teacher_id=? ORDER BY c.updated_at DESC""", (user["id"],)).fetchall()
+    return render_template("teacher_chat.html", teachers=[], chats=chats, chat=None, messages=[], is_teacher=True)
+
+@app.route("/teacher/messages/<int:chat_id>", methods=["GET", "POST"])
+@login_required
+def teacher_message_chat(chat_id):
+    user = current_user()
+    if user["role"] not in ("teacher", "admin"): abort(403)
+    return _teacher_chat_page(chat_id, user, is_teacher=True)
+
+def _teacher_chat_page(chat_id, user, is_teacher):
+    conn = db()
+    if is_teacher:
+        chat = conn.execute("""SELECT c.*,COALESCE(NULLIF(u.full_name,''),u.cadet_static,u.username) AS other_name
+            FROM teacher_chats c JOIN users u ON u.id=c.cadet_id WHERE c.id=? AND c.teacher_id=?""", (chat_id, user["id"])).fetchone()
+        list_url = url_for("teacher_messages")
+        chat_url = "teacher_message_chat"
+    else:
+        chat = conn.execute("""SELECT c.*,COALESCE(NULLIF(u.full_name,''),u.username) AS other_name
+            FROM teacher_chats c JOIN users u ON u.id=c.teacher_id WHERE c.id=? AND c.cadet_id=?""", (chat_id, user["id"])).fetchone()
+        list_url = url_for("contact_teachers")
+        chat_url = "contact_teacher_chat"
+    if not chat: abort(404)
+    if request.method == "POST":
+        message = request.form.get("message", "").strip()
+        if not message or len(message) > 4000:
+            flash("Сообщение должно содержать от 1 до 4000 символов.", "danger")
+        elif chat["status"] == "closed":
+            flash("Переписка закрыта. Обратись к руководству, чтобы открыть её снова.", "warning")
+        else:
+            timestamp = now()
+            conn.execute("INSERT INTO teacher_messages(chat_id,sender_id,message,created_at) VALUES(?,?,?,?)", (chat_id,user["id"],message,timestamp))
+            conn.execute("UPDATE teacher_chats SET updated_at=? WHERE id=?", (timestamp,chat_id))
+            conn.commit()
+            return redirect(url_for(chat_url, chat_id=chat_id))
+    messages = conn.execute("""SELECT m.*,CASE WHEN u.role='admin' THEN u.username ELSE COALESCE(NULLIF(u.full_name,''),u.cadet_static,u.username) END AS username,u.role
+        FROM teacher_messages m JOIN users u ON u.id=m.sender_id WHERE m.chat_id=? ORDER BY m.id""", (chat_id,)).fetchall()
+    if is_teacher:
+        chats = conn.execute("""SELECT c.*,COALESCE(NULLIF(u.full_name,''),u.cadet_static,u.username) AS cadet_name,
+            (SELECT message FROM teacher_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) last_message,
+            (SELECT COUNT(*) FROM teacher_messages m WHERE m.chat_id=c.id) message_count
+            FROM teacher_chats c JOIN users u ON u.id=c.cadet_id WHERE c.teacher_id=? ORDER BY c.updated_at DESC""", (user["id"],)).fetchall()
+    else:
+        teachers = conn.execute("SELECT id,full_name,username FROM users WHERE role='teacher' ORDER BY full_name,username").fetchall()
+        chats = conn.execute("""SELECT c.*,COALESCE(NULLIF(t.full_name,''),t.username) AS teacher_name,
+            (SELECT message FROM teacher_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) last_message,
+            (SELECT COUNT(*) FROM teacher_messages m WHERE m.chat_id=c.id) message_count
+            FROM teacher_chats c JOIN users t ON t.id=c.teacher_id WHERE c.cadet_id=? ORDER BY c.updated_at DESC""", (user["id"],)).fetchall()
+    return render_template("teacher_chat.html", teachers=locals().get("teachers", []), chats=chats, chat=chat, messages=messages, is_teacher=is_teacher)
+
+@app.route("/teacher-chat/api/<int:chat_id>")
+@login_required
+def teacher_chat_api(chat_id):
+    user = current_user()
+    chat = db().execute("SELECT * FROM teacher_chats WHERE id=?", (chat_id,)).fetchone()
+    if not chat: abort(404)
+    if user["id"] not in (chat["cadet_id"], chat["teacher_id"]): abort(403)
+    try: after_id = max(0, int(request.args.get("after", "0")))
+    except (TypeError, ValueError): after_id = 0
+    rows = db().execute("""SELECT m.id,m.sender_id,m.message,m.created_at,
+        CASE WHEN u.role='admin' THEN u.username ELSE COALESCE(NULLIF(u.full_name,''),u.cadet_static,u.username) END AS username,u.role
+        FROM teacher_messages m JOIN users u ON u.id=m.sender_id WHERE m.chat_id=? AND m.id>? ORDER BY m.id""", (chat_id,after_id)).fetchall()
+    return jsonify([dict(row) for row in rows])
+
+@app.route("/api/notifications")
+@login_required
+def browser_notifications_api():
+    """Poll incoming chat messages for browser notifications while the portal is open."""
+    user = current_user()
+    after = request.args.get("after", "")
+    try:
+        parsed = datetime.fromisoformat(after.replace("Z", "+00:00")) if after else datetime.now(timezone.utc)
+        if parsed.tzinfo is None: parsed = parsed.replace(tzinfo=timezone.utc)
+        after = parsed.astimezone(timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        after = datetime.now(timezone.utc).isoformat()
+    notifications = []
+    if user["role"] == "admin":
+        rows = db().execute("""SELECT m.created_at,m.message,COALESCE(NULLIF(u.full_name,''),u.cadet_static,u.username) sender,
+            '/admin/support/' || c.id url FROM support_messages m JOIN support_chats c ON c.id=m.chat_id JOIN users u ON u.id=m.sender_id
+            WHERE m.created_at>? AND m.sender_id!=? ORDER BY m.created_at LIMIT 30""", (after,user["id"])).fetchall()
+        notifications.extend(dict(r, title="Новое обращение в поддержку") for r in rows)
+    if user["role"] == "teacher":
+        rows = db().execute("""SELECT m.created_at,m.message,COALESCE(NULLIF(u.full_name,''),u.cadet_static,u.username) sender,
+            '/teacher/messages/' || c.id url FROM teacher_messages m JOIN teacher_chats c ON c.id=m.chat_id JOIN users u ON u.id=m.sender_id
+            WHERE c.teacher_id=? AND m.created_at>? AND m.sender_id!=? ORDER BY m.created_at LIMIT 30""", (user["id"],after,user["id"])).fetchall()
+        notifications.extend(dict(r, title="Новое сообщение от курсанта") for r in rows)
+    elif user["role"] == "cadet":
+        rows = db().execute("""SELECT m.created_at,m.message,COALESCE(NULLIF(u.full_name,''),u.username) sender,
+            '/contact-teachers/' || c.id url FROM teacher_messages m JOIN teacher_chats c ON c.id=m.chat_id JOIN users u ON u.id=m.sender_id
+            WHERE c.cadet_id=? AND m.created_at>? AND m.sender_id!=? ORDER BY m.created_at LIMIT 30""", (user["id"],after,user["id"])).fetchall()
+        notifications.extend(dict(r, title="Ответ преподавателя") for r in rows)
+        rows = db().execute("""SELECT m.created_at,m.message,u.username sender,
+            '/support/' || c.id url FROM support_messages m JOIN support_chats c ON c.id=m.chat_id JOIN users u ON u.id=m.sender_id
+            WHERE c.user_id=? AND m.created_at>? AND m.sender_id!=? ORDER BY m.created_at LIMIT 30""", (user["id"],after,user["id"])).fetchall()
+        notifications.extend(dict(r, title="Ответ поддержки ЦППС") for r in rows)
+    notifications.sort(key=lambda n: n["created_at"])
+    return jsonify(notifications[:30])
+
 @app.route("/news")
 def news():
     conn = db()
@@ -781,14 +1157,20 @@ def admin():
         WHERE a.finished_at IS NOT NULL ORDER BY a.id DESC LIMIT 500""").fetchall()
     internships = conn.execute("SELECT * FROM internships ORDER BY id DESC").fetchall()
     teacher_statuses = get_teacher_statuses()
-    return render_template("admin.html", stats=stats, tests=tests, users=users, attempts=attempts, internships=internships, teacher_statuses=teacher_statuses)
+    teachers_for_points = conn.execute("SELECT id,full_name,username,cadet_static FROM users WHERE role='teacher' ORDER BY full_name,username").fetchall()
+    teacher_point_requests = conn.execute("""SELECT p.*,u.full_name,u.username,u.cadet_static
+        FROM teacher_point_entries p JOIN users u ON u.id=p.teacher_id
+        WHERE p.status='pending' ORDER BY p.id ASC LIMIT 500""").fetchall()
+    return render_template("admin.html", stats=stats, tests=tests, users=users, attempts=attempts,
+        internships=internships, teacher_statuses=teacher_statuses, teacher_point_requests=teacher_point_requests, teachers_for_points=teachers_for_points,
+        teacher_activity_labels=TEACHER_ACTIVITY_LABELS)
 
 @app.route("/admin/test/new", methods=["POST"])
 @admin_required
 def create_test():
     title = request.form.get("title","").strip()
     event_type = request.form.get("event_type", "exam")
-    if event_type not in ("exam", "recertification", "transfer"):
+    if event_type not in ("exam", "recertification", "transfer", "obzvon"):
         event_type = "exam"
     if not title:
         flash("Укажите название мероприятия.", "danger")
