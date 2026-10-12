@@ -29,10 +29,15 @@
       {% if test.event_type == 'obzvon' %}<p class="obzvon-note">Отвечай по порядку. После выбора ответа система автоматически откроет следующий вопрос. В вопросах с несколькими правильными ответами нажми «Ответить и дальше».</p><div class="obzvon-progress"><span id="obzvon-progress-fill"></span></div><div class="question-controls"><span id="obzvon-counter" class="question-counter">Вопрос 1 из {{ questions|length }}</span><span id="obzvon-status" class="obzvon-note" aria-live="polite">Выбери ответ</span></div>{% endif %}
       {% for q in questions %}
       <div class="question{% if test.event_type == 'obzvon' and not loop.first %} is-hidden{% endif %}"{% if test.event_type == 'obzvon' %} data-question-step="{{ loop.index0 }}"{% endif %}><p class="qtitle">{{ loop.index }}. {{ q.prompt }}{% if q.question_type == 'multiple' %} <span class="pill">Выберите все правильные ответы</span>{% endif %}</p>
-        {% for letter in ['A','B','C','D'] %}
-          {% set key = letter|lower %}
-          <label class="option"><input type="{{ 'checkbox' if q.question_type == 'multiple' else 'radio' }}" name="q_{{ q.id }}" value="{{ letter }}"><span><b>{{ letter }}.</b> {{ q[key] }}</span></label>
-        {% endfor %}
+        {% if q.image_path %}<img src="{{ url_for('static', filename=q.image_path) }}" alt="Картинка к вопросу {{ loop.index }}" loading="lazy" style="display:block;width:auto;max-width:100%;max-height:460px;object-fit:contain;margin:12px 0 18px;border-radius:12px;border:1px solid #303b4c">{% endif %}
+        {% if q.question_type == 'text' %}
+          <label for="q_{{ q.id }}">Твой письменный ответ</label><textarea id="q_{{ q.id }}" name="q_{{ q.id }}" maxlength="4000" rows="4" style="width:100%;padding:13px;border:1px solid #3a4658;border-radius:9px;background:#0c121b;color:white;font:inherit;resize:vertical" placeholder="Напиши ответ своими словами"></textarea>
+        {% else %}
+          {% for letter in ['A','B','C','D'] %}
+            {% set key = letter|lower %}
+            <label class="option"><input type="{{ 'checkbox' if q.question_type == 'multiple' else 'radio' }}" name="q_{{ q.id }}" value="{{ letter }}"><span><b>{{ letter }}.</b> {{ q[key] }}</span></label>
+          {% endfor %}
+        {% endif %}
       </div>
       {% endfor %}
       {% if test.event_type == 'obzvon' %}<div class="question-controls" id="obzvon-controls"><button type="button" class="secondary-btn" id="obzvon-back" disabled>← Назад</button><button type="button" id="obzvon-next">Ответить и дальше →</button></div>{% endif %}
@@ -60,10 +65,10 @@
       counter.textContent = 'Вопрос ' + (current + 1) + ' из ' + steps.length;
       fill.style.width = ((current + 1) / steps.length * 100) + '%';
       back.disabled = current === 0;
-      const qInputs = steps[current].querySelectorAll('input[type=radio],input[type=checkbox]');
+      const qInputs = steps[current].querySelectorAll('input[type=radio],input[type=checkbox],textarea[name^=q_]');
       const isMultiple = qInputs.length && qInputs[0].type === 'checkbox';
       next.textContent = current === steps.length - 1 ? 'К завершению →' : (isMultiple ? 'Ответить и дальше →' : 'Дальше →');
-      const answered = Array.from(qInputs).some(input => input.checked);
+      const answered = Array.from(qInputs).some(input => input.type === 'textarea' ? input.value.trim().length > 0 : (input.type === 'checkbox' || input.type === 'radio') ? input.checked : false) || Array.from(qInputs).some(input => input.tagName === 'TEXTAREA' && input.value.trim().length > 0);
       status.textContent = answered ? 'Ответ выбран' : 'Выбери ответ';
     }
     steps.forEach((step, idx) => {
@@ -76,10 +81,11 @@
         }
       }));
     });
+    steps.forEach(step => step.querySelectorAll('textarea[name^=q_]').forEach(area => area.addEventListener('input', () => { if (step === steps[current]) status.textContent = area.value.trim() ? 'Ответ написан' : 'Напиши ответ'; })));
     back.addEventListener('click', () => showStep(current - 1));
     next.addEventListener('click', () => {
-      const inputs = steps[current].querySelectorAll('input[type=radio],input[type=checkbox]');
-      const answered = Array.from(inputs).some(input => input.checked);
+      const inputs = steps[current].querySelectorAll('input[type=radio],input[type=checkbox],textarea[name^=q_]');
+      const answered = Array.from(inputs).some(input => input.tagName === 'TEXTAREA' ? input.value.trim().length > 0 : input.checked);
       if (!answered) { status.textContent = 'Сначала выбери ответ'; return; }
       if (current < steps.length - 1) showStep(current + 1);
       else { document.getElementById('cadet_full_name').focus({preventScroll:true}); btn.scrollIntoView({behavior:'smooth',block:'center'}); }

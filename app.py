@@ -15,6 +15,9 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                  SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "0") == "1",
                  MAX_CONTENT_LENGTH=int(os.environ.get("MAX_UPLOAD_BYTES", str(512 * 1024 * 1024))))
 VIDEO_UPLOAD_DIR = os.path.join(APP_DIR, "static", "uploads", "lectures")
+QUESTION_IMAGE_UPLOAD_DIR = os.path.join(APP_DIR, "static", "uploads", "questions")
+ALLOWED_QUESTION_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif"}
+MAX_QUESTION_IMAGE_BYTES = 5 * 1024 * 1024
 ALLOWED_VIDEO_EXTENSIONS = {"mp4", "webm", "ogg", "mov"}
 
 # Баллы начисляются только после проверки заявки администратором.
@@ -182,6 +185,10 @@ def init_db():
         conn.execute("ALTER TABLE questions ADD COLUMN question_type TEXT NOT NULL DEFAULT 'single'")
     if "correct_answers" not in question_columns:
         conn.execute("ALTER TABLE questions ADD COLUMN correct_answers TEXT NOT NULL DEFAULT '[]'")
+    if "text_answer" not in question_columns:
+        conn.execute("ALTER TABLE questions ADD COLUMN text_answer TEXT NOT NULL DEFAULT ''")
+    if "image_path" not in question_columns:
+        conn.execute("ALTER TABLE questions ADD COLUMN image_path TEXT NOT NULL DEFAULT ''")
     # Миграция существующей базы: добавляем данные экзамена без удаления старых результатов.
     attempt_columns = {row[1] for row in conn.execute("PRAGMA table_info(attempts)").fetchall()}
     for column in ("cadet_full_name", "cadet_static", "examiner_full_name"):
@@ -658,7 +665,15 @@ def take_test(test_id):
     answers = {}
     score = 0
     for q in questions:
-        if q["question_type"] == "multiple":
+        if q["question_type"] == "text":
+            ans = request.form.get(f"q_{q['id']}", "").strip()
+            if ans:
+                answers[str(q["id"])] = ans[:4000]
+            expected_text = " ".join((q["text_answer"] or "").casefold().split())
+            normalized_ans = " ".join(ans.casefold().split())
+            if expected_text and normalized_ans and normalized_ans == expected_text:
+                score += 1
+        elif q["question_type"] == "multiple":
             selected = sorted(set(x for x in request.form.getlist(f"q_{q['id']}") if x in ("A","B","C","D")))
             if selected:
                 answers[str(q["id"])] = selected
@@ -1202,18 +1217,47 @@ def edit_test(test_id):
         prompt = request.form.get("prompt","").strip()
         options = [request.form.get(k,"").strip() for k in ("a","b","c","d")]
         question_type = request.form.get("question_type", "single")
+        text_answer = request.form.get("text_answer", "").strip()
+        image_file = request.files.get("question_image")
+        image_path = ""
+        image_error = ""
+        if image_file and image_file.filename:
+            safe_name = secure_filename(image_file.filename)
+            extension = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
+            if extension not in ALLOWED_QUESTION_IMAGE_EXTENSIONS:
+                image_error = "Для картинки используй PNG, JPG, JPEG, WEBP или GIF."
+            else:
+                image_file.stream.seek(0, os.SEEK_END)
+                image_size = image_file.stream.tell()
+                image_file.stream.seek(0)
+                if image_size > MAX_QUESTION_IMAGE_BYTES:
+                    image_error = "Картинка слишком большая. Максимальный размер — 5 МБ."
+                elif image_size == 0:
+                    image_error = "Выбранный файл пустой."
+                else:
+                    os.makedirs(QUESTION_IMAGE_UPLOAD_DIR, exist_ok=True)
+                    stored_name = secrets.token_hex(16) + "." + extension
+                    image_file.save(os.path.join(QUESTION_IMAGE_UPLOAD_DIR, stored_name))
+                    image_path = "uploads/questions/" + stored_name
         correct = request.form.get("correct","A")
         correct_answers = sorted(set(x for x in request.form.getlist("correct_answers") if x in ("A","B","C","D")))
-        valid_single = question_type == "single" and correct in ("A","B","C","D")
-        valid_multiple = question_type == "multiple" and len(correct_answers) >= 2
-        if not prompt or not all(options) or not (valid_single or valid_multiple):
-            flash("Заполните вопрос, все четыре варианта и отметьте правильный ответ (для нескольких ответов — минимум два).", "danger")
+        valid_single = question_type == "single" and correct in ("A","B","C","D") and all(options)
+        valid_multiple = question_type == "multiple" and len(correct_answers) >= 2 and all(options)
+        valid_text = question_type == "text" and bool(text_answer)
+        if image_error:
+            flash(image_error, "danger")
+        elif not prompt or not (valid_single or valid_multiple or valid_text):
+            flash("Для вариантов заполните ответы и отметьте правильный вариант. Для письменного вопроса укажите эталонный ответ.", "danger")
         else:
             if question_type == "multiple":
                 correct = correct_answers[0]  # Для совместимости со старыми записями.
-            conn.execute("""INSERT INTO questions(test_id,prompt,a,b,c,d,correct,question_type,correct_answers)
-                VALUES(?,?,?,?,?,?,?,?,?)""",
-                (test_id,prompt,*options,correct,question_type,json.dumps(correct_answers if question_type == "multiple" else [correct])))
+            if question_type == "text":
+                options = ["", "", "", ""]
+                correct = "A"
+                correct_answers = []
+            conn.execute("""INSERT INTO questions(test_id,prompt,a,b,c,d,correct,question_type,correct_answers,text_answer,image_path)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (test_id,prompt,*options,correct,question_type,json.dumps(correct_answers if question_type == "multiple" else ([correct] if question_type == "single" else [])),text_answer if question_type == "text" else "",image_path))
             conn.commit()
             flash("Вопрос добавлен.", "success")
         return redirect(url_for("edit_test", test_id=test_id))
@@ -1231,6 +1275,35 @@ def test_settings(test_id):
     db().commit()
     flash("Настройки сохранены.", "success")
     return redirect(url_for("edit_test_alias", test_id=test_id))
+
+@app.route("/admin/question/<int:question_id>/move-option", methods=["POST"])
+@admin_required
+def move_question_option(question_id):
+    conn = db()
+    q = conn.execute("SELECT * FROM questions WHERE id=?", (question_id,)).fetchone()
+    if not q:
+        abort(404)
+    direction = request.form.get("direction", "")
+    letters = ["A", "B", "C", "D"]
+    index = safe_int(request.form.get("index"), -1, 0, 3)
+    target = index - 1 if direction == "up" else index + 1
+    if target < 0 or target > 3:
+        return redirect(url_for("edit_test", test_id=q["test_id"]))
+    old_to_new = {letter: letter for letter in letters}
+    old_to_new[letters[index]], old_to_new[letters[target]] = letters[target], letters[index]
+    options = [q[k.lower()] for k in letters]
+    options[index], options[target] = options[target], options[index]
+    correct = old_to_new.get(q["correct"], q["correct"])
+    try:
+        old_correct = json.loads(q["correct_answers"] or "[]")
+    except (ValueError, TypeError):
+        old_correct = [q["correct"]]
+    new_correct = sorted(set(old_to_new.get(letter, letter) for letter in old_correct if letter in letters))
+    conn.execute("UPDATE questions SET a=?,b=?,c=?,d=?,correct=?,correct_answers=? WHERE id=?",
+                 (*options, correct, json.dumps(new_correct), question_id))
+    conn.commit()
+    flash("Порядок вариантов изменён. Правильный ответ сохранён.", "success")
+    return redirect(url_for("edit_test", test_id=q["test_id"]))
 
 @app.route("/admin/question/<int:question_id>/delete", methods=["POST"])
 @admin_required

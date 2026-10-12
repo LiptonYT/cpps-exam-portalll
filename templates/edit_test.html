@@ -27,14 +27,17 @@
 
   <section class="panel">
     <h2>➕ Добавить вопрос</h2>
-    <form method="post" action="{{ url_for('edit_test', test_id=test.id) }}">
+    <form method="post" enctype="multipart/form-data" action="{{ url_for('edit_test', test_id=test.id) }}">
       <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
       <label>Текст вопроса</label><textarea name="prompt" required maxlength="2000" placeholder="Введите вопрос"></textarea>
-      <div class="grid"><div><label>Вариант A</label><input name="a" required maxlength="500"></div><div><label>Вариант B</label><input name="b" required maxlength="500"></div><div><label>Вариант C</label><input name="c" required maxlength="500"></div><div><label>Вариант D</label><input name="d" required maxlength="500"></div></div>
+      <label>🖼️ Картинка к вопросу (необязательно)</label><input type="file" name="question_image" accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif"><p class="muted">PNG, JPG, WEBP или GIF · до 5 МБ. Картинка будет показана курсанту прямо в экзамене.</p>
+      <div id="choice-options" class="grid"><div><label>Вариант A</label><input name="a" required maxlength="500"></div><div><label>Вариант B</label><input name="b" required maxlength="500"></div><div><label>Вариант C</label><input name="c" required maxlength="500"></div><div><label>Вариант D</label><input name="d" required maxlength="500"></div></div>
+      <div id="written-options" hidden><label>Эталонный ответ (для автоматической проверки)</label><textarea name="text_answer" id="text_answer" maxlength="4000" placeholder="Введите ответ, с которым будет сравниваться ответ курсанта"></textarea><p class="muted">Ответ курсанта сравнивается без учёта регистра и лишних пробелов. Если нужен развёрнутый ответ своими словами, преподаватель сможет проверить его по сохранённому ответу курсанта.</p></div>
       <label>Тип вопроса</label>
       <select name="question_type" id="question_type">
         <option value="single">Один правильный ответ</option>
         <option value="multiple">Несколько правильных ответов</option>
+        <option value="text">Письменный ответ</option>
       </select>
       <div id="single-correct">
         <label>Правильный ответ</label><select name="correct" id="correct"><option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="D">D</option></select>
@@ -53,9 +56,16 @@
         const type = document.getElementById('question_type');
         const single = document.getElementById('single-correct');
         const multiple = document.getElementById('multiple-correct');
+        const choiceOptions = document.getElementById('choice-options');
+        const writtenOptions = document.getElementById('written-options');
+        const textAnswer = document.getElementById('text_answer');
         function update() {
           single.hidden = type.value !== 'single';
           multiple.hidden = type.value !== 'multiple';
+          choiceOptions.hidden = type.value === 'text';
+          writtenOptions.hidden = type.value !== 'text';
+          choiceOptions.querySelectorAll('input').forEach(input => input.required = type.value !== 'text');
+          textAnswer.required = type.value === 'text';
         }
         type.addEventListener('change', update); update();
       })();
@@ -65,7 +75,11 @@
   </section>
 
   <section class="panel"><h2>📋 Вопросы экзамена ({{ questions|length }})</h2>
-    {% for q in questions %}<div class="question"><strong>{{ loop.index }}. {{ q.prompt }}</strong><p class="muted">A. {{ q.a }}<br>B. {{ q.b }}<br>C. {{ q.c }}<br>D. {{ q.d }}<br>
-      {% if q.question_type == 'multiple' %}Правильные ответы: {{ q.correct_answers }}{% else %}Правильный ответ: {{ q.correct }}{% endif %}</p><form method="post" action="{{ url_for('delete_question', question_id=q.id) }}" onsubmit="return confirm('Удалить этот вопрос?')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="danger" type="submit">Удалить вопрос</button></form></div>{% else %}<p class="muted">Вопросов пока нет. Добавь первый выше.</p>{% endfor %}
+    {% for q in questions %}<div class="question"><strong>{{ loop.index }}. {{ q.prompt }}</strong>
+      {% if q.image_path %}<p><img src="{{ url_for('static', filename=q.image_path) }}" alt="Картинка к вопросу" style="display:block;max-width:100%;max-height:320px;object-fit:contain;margin-top:10px;border-radius:10px;border:1px solid var(--line)"></p>{% endif %}
+      {% if q.question_type == 'text' %}<p class="muted">✍️ Письменный ответ · Эталон: {{ q.text_answer or 'не указан' }}</p>
+      {% else %}<p class="muted">A. {{ q.a }}<br>B. {{ q.b }}<br>C. {{ q.c }}<br>D. {{ q.d }}<br>{% if q.question_type == 'multiple' %}Правильные ответы: {{ q.correct_answers }}{% else %}Правильный ответ: {{ q.correct }}{% endif %}</p>
+      <div class="actions"><span class="muted">Поменять порядок вариантов:</span>{% for letter in ['A','B','C','D'] %}<form method="post" action="{{ url_for('move_question_option', question_id=q.id) }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="index" value="{{ loop.index0 }}">{% if not loop.first %}<button type="submit" name="direction" value="up" title="Переместить {{ letter }} вверх">↑ {{ letter }}</button>{% endif %}{% if not loop.last %}<button type="submit" name="direction" value="down" title="Переместить {{ letter }} вниз">↓ {{ letter }}</button>{% endif %}</form>{% endfor %}</div>{% endif %}
+      <form method="post" action="{{ url_for('delete_question', question_id=q.id) }}" onsubmit="return confirm('Удалить этот вопрос?')"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="danger" type="submit">Удалить вопрос</button></form></div>{% else %}<p class="muted">Вопросов пока нет. Добавь первый выше.</p>{% endfor %}
   </section>
 </main></body></html>
